@@ -1756,6 +1756,89 @@ class ConfigPort(ConfigObject):
                     break
         self.vnc.instance_ip_create(ip)
 
+    def add_ip(self, obj, address, network, shared):
+        net_obj = self.vnc.virtual_network_read(
+                fq_name = ['default-domain', self.tenant.name, network])
+        ip_obj = vnc_api.InstanceIp(name = str(uuid.uuid4()))
+        ip_obj.uuid = ip_obj.name
+        ip_obj.add_virtual_network(net_obj)
+        if address:
+            ip_obj.set_instance_ip_address(address)
+            if (len(address.split(':')) > 1):
+                ip_obj.set_instance_ip_family('v6')
+            else:
+                ip_obj.set_instance_ip_family('v4')
+        if shared:
+            ip_obj.set_instance_ip_mode(u'active-active')
+        ip_obj.add_virtual_machine_interface(obj)
+        self.vnc.instance_ip_create(ip_obj)
+
+    def add_network(self, obj, network):
+        net_obj = self.vnc.virtual_network_read(
+                fq_name = ['default-domain', self.tenant.name, network])
+        obj.add_virtual_network(net_obj)
+
+    def add_sg(self, obj, sg):
+        try:
+            sg_obj = self.vnc.security_group_read(
+                    fq_name = ['default-domain', self.tenant.name, sg])
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
+            return
+        obj.add_security_group(sg_obj)
+
+    def add_irt(self, obj, irt):
+        try:
+            table_obj = self.vnc.interface_route_table_read(
+                    fq_name = ['default-domain', self.tenant.name, irt])
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
+            return
+        obj.add_interface_route_table(table_obj)
+
+    def add_mirror(self, obj, mirror_args):
+        direction = 'both'
+        address = None
+        name = None
+        port = 8099
+        ri = None
+        for arg in mirror_args.split(','):
+            arg_name, arg_val = arg.split('=')
+            if (arg_name == 'direction'):
+                direction = arg_val
+            elif (arg_name == 'address'):
+                address = arg_val
+            elif (arg_name == 'name'):
+                name = arg_val
+            elif (arg_name == 'port'):
+                port = int(arg_val)
+        if not address:
+            print 'ERROR: Address is not specified!'
+            return
+        #for item in self.vnc.instance_ips_list()['instance-ips']:
+        #    iip = self.vnc.instance_ip_read(id = item['uuid'])
+        #    if (iip.instance_ip_address == address):
+        #        vn_name = iip.get_virtual_network_refs()[0]['to']
+        #        if (vn_name[1] == self.tenant.name):
+        #            ri = vn_name
+        #            ri.append(ri[2])
+        #            break
+        #else:
+        #    print 'ERROR: Faild to find VN by address!'
+        #    return
+        prop = obj.get_virtual_machine_interface_properties()
+        if not prop:
+            prop = vnc_api.VirtualMachineInterfacePropertiesType()
+        mirror_action = vnc_api.MirrorActionType()
+        mirror_action.analyzer_ip_address = address
+        mirror_action.analyzer_name = name
+        mirror_action.routing_instance = ri
+        mirror_action.udp_port = port
+        mirror_type = vnc_api.InterfaceMirrorType(
+                traffic_direction = direction, mirror_to = mirror_action)
+        prop.set_interface_mirror(mirror_type)
+        obj.set_virtual_machine_interface_properties(prop)
+
     def create(self, args):
         if (args.name == 'id'):
             id = str(uuid.uuid4())
@@ -1790,66 +1873,25 @@ class ConfigPort(ConfigObject):
             self.ip_add(vmi, vn, None)
         return vmi
 
-    def add_ip(self, obj, address, network, shared):
-        net_obj = self.vnc.virtual_network_read(
-                fq_name = ['default-domain', self.tenant.name, network])
-        ip_obj = vnc_api.InstanceIp(name = str(uuid.uuid4()))
-        ip_obj.uuid = ip_obj.name
-        ip_obj.add_virtual_network(net_obj)
-        if address:
-            ip_obj.set_instance_ip_address(address)
-            if (len(address.split(':')) > 1):
-                ip_obj.set_instance_ip_family('v6')
-            else:
-                ip_obj.set_instance_ip_family('v4')
-        if shared:
-            ip_obj.set_instance_ip_mode(u'active-active')
-        ip_obj.add_virtual_machine_interface(obj)
-        self.vnc.instance_ip_create(ip_obj)
-
-    def add_network(self, obj, network):
-        net_obj = self.vnc.virtual_network_read(
-                fq_name = ['default-domain', self.tenant.name, network])
-        obj.add_virtual_network(net_obj)
-
-    def add_sg(self, obj, sg):
-        try:
-            sg_obj = self.vnc.security_group_read(
-                    fq_name = ['default-domain', self.tenant.name, sg])
-        except Exception as e:
-            print 'ERROR: %s' %(str(e))
+    def add(self, args):
+        obj = self.obj_get(args.name)
+        if not obj:
+            print 'ERROR: Port %s is not found!' %(args.name)
             return
-        obj.add_security_group(sg_obj)
 
-    def add(self, name, network, address, shared, sg):
-        update = False
-        port_obj = self.obj_get(name)
-        if port_obj:
-            update = True
-        else:
-            if name == 'auto':
-                id = str(uuid.uuid4())
-                port_obj = vnc_api.VirtualMachineInterface(name = id, 
-                        parent_obj = self.tenant)
-                port_obj.uuid = id
-            else:
-                port_obj = vnc_api.VirtualMachineInterface(name = name, 
-                        parent_obj = self.tenant)
+        #if network:
+        #    self.add_network(port_obj, network)
+        #if args.sg:
+        #    self.add_sg(port_obj, args.sg)
+        #if args.irt:
+        #    self.add_irt(port_obj, args.irt)
+        if args.mirror:
+            self.add_mirror(obj, args.mirror)
 
-        if network:
-            self.add_network(port_obj, network)
-        if sg:
-            self.add_sg(port_obj, sg)
+        self.vnc.virtual_machine_interface_update(obj)
 
-        if update:
-            self.vnc.virtual_machine_interface_update(port_obj)
-        else:
-            self.vnc.virtual_machine_interface_create(port_obj)
-
-        if network:
-            self.add_ip(port_obj, address, network, shared)
-
-        print port_obj.uuid
+        #if network:
+        #    self.add_ip(port_obj, address, network, shared)
 
     def delete_address(self, obj, address):
         for item in obj.get_instance_ip_back_refs():
@@ -1870,8 +1912,42 @@ class ConfigPort(ConfigObject):
         obj.del_security_group(sg_obj)
         '''
 
+    def delete_irt(self, obj, irt):
+        try:
+            table_obj = self.vnc.interface_route_table_read(
+                    fq_name = ['default-domain', self.tenant.name, irt])
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
+            return
+        obj.del_interface_route_table(table_obj)
+
+    def delete_mirror(self, obj):
+        prop = obj.get_virtual_machine_interface_properties()
+        prop.set_interface_mirror(None)
+        obj.set_virtual_machine_interface_properties(prop)
+
     def delete(self, args):
         obj = self.obj_get(args.name, msg = True)
+        if not obj:
+            return
+        update = False
+        #if args.sg:
+        #    self.delete_sg(obj, args.sg)
+        #    update = True
+        #if args.irt:
+        #    self.delete_irt(obj, args.irt)
+        #    update = True
+        #if args.address:
+        #    self.delete_address(obj, args.address)
+        #    update = True
+        if args.mirror:
+            self.delete_mirror(obj)
+            update = True
+
+        if update:
+            self.vnc.virtual_machine_interface_update(obj)
+            return
+
         ip_list = obj.get_instance_ip_back_refs()
         if ip_list:
             for ip in ip_list:
@@ -1880,27 +1956,6 @@ class ConfigPort(ConfigObject):
             self.vnc.virtual_machine_interface_delete(id = obj.uuid)
         except Exception as e:
             print 'ERROR: %s' %(str(e))
-
-    def delete_old(self, name, network, address, sg):
-        update = False
-        obj = self.obj_get(name, msg = True)
-        if not obj:
-            return
-        if address:
-            self.delete_address(obj, address)
-            update = True
-        if sg:
-            self.delete_sg(obj, sg)
-            update = True
-
-        if update:
-            self.vnc.virtual_machine_interface_update(obj)
-        else:
-            ip_list = obj.get_instance_ip_back_refs()
-            if ip_list:
-                for item in ip_list:
-                    self.vnc.instance_ip_delete(id = item['uuid'])
-            self.vnc.virtual_machine_interface_delete(id = obj.uuid)
 
 
 class ConfigVmInterface():
@@ -2021,15 +2076,6 @@ class ConfigVmInterface():
             for item in self.obj_list():
                     print '    %s' %(item['name'])
 
-    def add_sg(self, obj, sg):
-        try:
-            sg_obj = self.vnc.security_group_read(
-                    fq_name = ['default-domain', self.tenant.name, sg])
-        except Exception as e:
-            print 'ERROR: %s' %(str(e))
-            return
-        obj.add_security_group(sg_obj)
-
     def add_addr(self, obj, addr):
         id = str(uuid.uuid4())
         ip_obj = vnc_api.InstanceIp(name = id, instance_ip_address = addr)
@@ -2068,50 +2114,6 @@ class ConfigVmInterface():
         self.tenant.add_floating_ip_pool(pool_obj)
         self.vnc.project_update(self.tenant)
 
-    def add_mirror(self, obj, mirror):
-        direction = 'both'
-        address = None
-        name = None
-        port = 8099
-        ri = None
-        for arg in mirror.split(','):
-            arg_name, arg_val = arg.split('=')
-            if (arg_name == 'direction'):
-                direction = arg_val
-            elif (arg_name == 'address'):
-                address = arg_val
-            elif (arg_name == 'name'):
-                name = arg_val
-            elif (arg_name == 'port'):
-                port = int(arg_val)
-        if not address:
-            print 'ERROR: Address is not specified!'
-            return
-        for item in self.vnc.instance_ips_list()['instance-ips']:
-            iip = self.vnc.instance_ip_read(id = item['uuid'])
-            if (iip.instance_ip_address == address):
-                vn_name = iip.get_virtual_network_refs()[0]['to']
-                if (vn_name[1] == self.tenant.name):
-                    ri = vn_name
-                    ri.append(ri[2])
-                    break
-        else:
-            print 'ERROR: Faild to find VN by address!'
-            return
-        prop = obj.get_virtual_machine_interface_properties()
-        if not prop:
-            prop = vnc_api.VirtualMachineInterfacePropertiesType()
-        mirror_action = vnc_api.MirrorActionType()
-        mirror_action.analyzer_ip_address = address
-        mirror_action.analyzer_name = name
-        mirror_action.routing_instance = ri
-        mirror_action.udp_port = port
-        mirror_type = vnc_api.InterfaceMirrorType()
-        mirror_type.set_traffic_direction(direction)
-        mirror_type.set_mirror_to(mirror_action)
-        prop.set_interface_mirror(mirror_type)
-        obj.set_virtual_machine_interface_properties(prop)
-
     def add(self, name, sg = None, irt = None, addr = None,
             fip_pool = None, fip = None, mirror = None):
         update = False
@@ -2119,9 +2121,6 @@ class ConfigVmInterface():
         if not obj:
             print 'ERROR: Object %s is not found!' %(name)
             return
-        if sg:
-            self.add_sg(obj, sg)
-            update = True
         if irt:
             self.add_irt(obj, irt)
             update = True
@@ -2131,32 +2130,8 @@ class ConfigVmInterface():
         if fip and fip_pool:
             self.add_fip(obj, fip_pool, fip)
             update = True
-        if mirror:
-            self.add_mirror(obj, mirror)
-            update = True
         if update:
             self.vnc.virtual_machine_interface_update(obj)
-
-    def delete_sg(self, obj, sg):
-        obj.set_security_group_list([])
-        '''
-        try:
-            sg_obj = self.vnc.security_group_read(
-                    fq_name = ['default-domain', self.tenant.name, sg])
-        except Exception as e:
-            print 'ERROR: %s' %(str(e))
-            return
-        obj.del_security_group(sg_obj)
-        '''
-
-    def delete_irt(self, obj, irt):
-        try:
-            table_obj = self.vnc.interface_route_table_read(
-                    fq_name = ['default-domain', self.tenant.name, irt])
-        except Exception as e:
-            print 'ERROR: %s' %(str(e))
-            return
-        obj.del_interface_route_table(table_obj)
 
     def delete_addr(self, obj, addr):
         if len(addr.split('.')) > 1:
@@ -2188,12 +2163,6 @@ class ConfigVmInterface():
         if not obj:
             print 'ERROR: Object %s is not found!' %(name)
             return
-        if sg:
-            self.delete_sg(obj, sg)
-            update = True
-        if irt:
-            self.delete_irt(obj, irt)
-            update = True
         if addr:
             self.delete_addr(obj, addr)
             return
@@ -2807,9 +2776,20 @@ class ConfigCli():
                 metavar = '<name>[:<subnet prefix>/<length>[...]]',
                 help='Virtual network name')
 
+        p = ps_add.add_parser('port', help = 'Port/VMI')
+        p.set_defaults(obj_class = ConfigPort, obj_func = 'add')
+        p.add_argument('name', metavar = '<name> | id',
+                help='Port name')
+        p.add_argument('--mirror', metavar = '<arguments>',
+                help = 'Mirror ' \
+                       'direction=[ ingress | egress | both ],' \
+                       'name=<analyzer name>,' \
+                       'address=<analyzer address>')
+
         p = ps_delete.add_parser('port', help = 'Port/VMI')
         p.set_defaults(obj_class = ConfigPort, obj_func = 'delete')
         p.add_argument('name', metavar = '<name> | <id>', help = 'The name')
+        p.add_argument('--mirror', action = 'store_true', help = 'Mirror')
 
         #### Service Appliance ####
         p = ps_list.add_parser('sa', help = 'Service Appliance')
