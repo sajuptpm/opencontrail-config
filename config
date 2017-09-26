@@ -1796,46 +1796,45 @@ class ConfigPort(ConfigObject):
             return
         obj.add_interface_route_table(table_obj)
 
-    def add_mirror(self, obj, mirror_args):
-        direction = 'both'
-        address = None
-        name = None
-        port = 8099
-        ri = None
-        for arg in mirror_args.split(','):
+    def add_mirror(self, obj, cli_args):
+        args = {
+                'direction': 'both',
+                'address': None,
+                'network': None,
+                'name': 'default-analyzer',
+                'port': 8099,
+                'juniper-header': 'true',
+                'mac': None,
+                'nh-mode': 'dynamic',
+                'vni': 0,
+                'vtep-address': None}
+        for arg in cli_args.split(','):
             arg_name, arg_val = arg.split('=')
-            if (arg_name == 'direction'):
-                direction = arg_val
-            elif (arg_name == 'address'):
-                address = arg_val
-            elif (arg_name == 'name'):
-                name = arg_val
-            elif (arg_name == 'port'):
-                port = int(arg_val)
-        if not address:
-            print 'ERROR: Address is not specified!'
-            return
-        #for item in self.vnc.instance_ips_list()['instance-ips']:
-        #    iip = self.vnc.instance_ip_read(id = item['uuid'])
-        #    if (iip.instance_ip_address == address):
-        #        vn_name = iip.get_virtual_network_refs()[0]['to']
-        #        if (vn_name[1] == self.tenant.name):
-        #            ri = vn_name
-        #            ri.append(ri[2])
-        #            break
-        #else:
-        #    print 'ERROR: Faild to find VN by address!'
-        #    return
+            if args.has_key(arg_name):
+                args[arg_name] = arg_val
         prop = obj.get_virtual_machine_interface_properties()
         if not prop:
             prop = vnc_api.VirtualMachineInterfacePropertiesType()
         mirror_action = vnc_api.MirrorActionType()
-        mirror_action.analyzer_ip_address = address
-        mirror_action.analyzer_name = name
-        mirror_action.routing_instance = ri
-        mirror_action.udp_port = port
+        if args['juniper-header'] == 'true':
+            mirror_action.analyzer_name = args['name']
+            mirror_action.analyzer_ip_address = args['address']
+            mirror_action.udp_port = args['port']
+        else:
+            mirror_action.juniper_header = False
+            mirror_action.nh_mode = args['nh-mode']
+            if args['nh-mode'] == 'dynamic':
+                n = args['network']
+                mirror_action.routing_instance = n + n[n.rfind(':'):]
+                mirror_action.analyzer_mac_address = args['mac']
+            else:
+                header = vnc_api.StaticMirrorNhType()
+                header.vtep_dst_ip_address = args['vtep-address']
+                header.vni = args['vni']
+                mirror_action.static_nh_header = header
         mirror_type = vnc_api.InterfaceMirrorType(
-                traffic_direction = direction, mirror_to = mirror_action)
+                traffic_direction = args['direction'],
+                mirror_to = mirror_action)
         prop.set_interface_mirror(mirror_type)
         obj.set_virtual_machine_interface_properties(prop)
 
@@ -2784,7 +2783,13 @@ class ConfigCli():
                 help = 'Mirror ' \
                        'direction=[ ingress | egress | both ],' \
                        'name=<analyzer name>,' \
-                       'address=<analyzer address>')
+                       'juniper-header=[ true | false ],' \
+                       'nh-mode=[ dynamic | static ],' \
+                       'network=[ FQ name of analyzer network ],' \
+                       'mac=[ analyzer MAC ],' \
+                       'vtep-address=[ VTEP IP address ],' \
+                       'vni=[ VNI of analyzer VN ],' \
+                       'address=<analyzer IP address>')
 
         p = ps_delete.add_parser('port', help = 'Port/VMI')
         p.set_defaults(obj_class = ConfigPort, obj_func = 'delete')
