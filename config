@@ -1816,11 +1816,12 @@ class ConfigPort(ConfigObject):
         if not prop:
             prop = vnc_api.VirtualMachineInterfacePropertiesType()
         mirror_action = vnc_api.MirrorActionType()
+        mirror_action.analyzer_name = args['name']
         if args['juniper-header'] == 'true':
-            mirror_action.analyzer_name = args['name']
             mirror_action.analyzer_ip_address = args['address']
             mirror_action.udp_port = args['port']
         else:
+            mirror_action.analyzer_ip_address = args['address']
             mirror_action.juniper_header = False
             mirror_action.nh_mode = args['nh-mode']
             if args['nh-mode'] == 'dynamic':
