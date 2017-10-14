@@ -96,6 +96,7 @@ class ConfigObject(object):
 
     def show(self, args):
         obj = self.obj_get(args.name, msg = True)
+        import pdb;pdb.set_trace()
         if not obj:
             return
         if (args.format == 'obj'):
@@ -111,6 +112,27 @@ class ConfigObject(object):
 class ConfigCni(ConfigObject):
     def __init__(self, client):
         super(ConfigCni, self).__init__(client) 
+
+    def show(self, args):
+        vm_name = '%s-%s' % (socket.gethostname(), args.name)
+        try:
+            vm = self.vnc.virtual_machine_read(fq_name = [vm_name])
+        except vnc_api.NoIdError:
+            print 'ERROR: VM %s not found!' %(vm_name)
+            return
+        print 'VM: %s' %(vm.name)
+        vmi_bref_list = vm.get_virtual_machine_interface_back_refs()
+        if not vmi_bref_list:
+            return
+        for vmi_bref in vmi_bref_list:
+            vmi = self.vnc.virtual_machine_interface_read(id = vmi_bref['uuid'])
+            print '  Port: %s' %(vmi.uuid)
+            iip_bref_list = vmi.get_instance_ip_back_refs()
+            if not iip_bref_list:
+                continue
+            for iip_bref in iip_bref_list:
+                iip = self.vnc.instance_ip_read(id = iip_bref['uuid'])
+                print '    inet: %s' %(iip.get_instance_ip_address())
 
     def vrouter_port_add(self, mac, vmi_id, vm_id, vn_id, cni_name):
         url = 'http://127.0.0.1:9091/port'
@@ -130,7 +152,7 @@ class ConfigCni(ConfigObject):
         data['system-name'] = cni_name
         r = requests.post(url, headers = headers,
                 data = json.dumps(data, indent = 4))
-        print r.text
+        #print r.text
 
     def vrouter_port_del(self, vmi_id):
         url = 'http://127.0.0.1:9091/port/%s' %vmi_id
@@ -2572,8 +2594,11 @@ class ConfigCli():
         p.set_defaults(obj_class = ConfigAcl, obj_func = 'show')
         self.add_show_args(p)
 
-
         #### Container Network Interface ####
+        p = ps_show.add_parser('cni', help = 'Container Network Interface')
+        p.set_defaults(obj_class = ConfigCni, obj_func = 'show')
+        self.add_show_args(p)
+
         p = ps_create.add_parser('cni', help = 'Container Network Interface')
         p.set_defaults(obj_class = ConfigCni, obj_func = 'create')
         p.add_argument('--id', required = True,
