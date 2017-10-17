@@ -96,7 +96,6 @@ class ConfigObject(object):
 
     def show(self, args):
         obj = self.obj_get(args.name, msg = True)
-        import pdb;pdb.set_trace()
         if not obj:
             return
         if (args.format == 'obj'):
