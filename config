@@ -1952,9 +1952,9 @@ class ConfigPort(ConfigObject):
         if not obj:
             return
         update = False
-        #if args.sg:
-        #    self.delete_sg(obj, args.sg)
-        #    update = True
+        if args.security_group:
+            self.delete_sg(obj, args.security_group)
+            update = True
         #if args.irt:
         #    self.delete_irt(obj, args.irt)
         #    update = True
@@ -2820,6 +2820,8 @@ class ConfigCli():
         p.set_defaults(obj_class = ConfigPort, obj_func = 'delete')
         p.add_argument('name', metavar = '<name> | <id>', help = 'The name')
         p.add_argument('--mirror', action = 'store_true', help = 'Mirror')
+        p.add_argument('--security-group', action = 'store_true',
+                help = 'Security group')
 
         #### Service Appliance ####
         p = ps_list.add_parser('sa', help = 'Service Appliance')
