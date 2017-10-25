@@ -60,7 +60,10 @@ class ConfigObject(object):
                 fq_name.append(item)
         else:
             fq_name = ['default-domain', self.tenant.name, name]
-        return fq_name
+        if str:
+            return to_fq_name_str(fq_name)
+        else:
+            return fq_name
 
     def obj_get(self, name, msg = False):
         fq_name = self.fq_name_get(name)
