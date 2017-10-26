@@ -9,22 +9,41 @@ import subprocess
 import socket
 import json
 import requests
+import pprint
 from vnc_api import vnc_api
+try:
+    from cfgm_common import _obj_serializer_all
+except:
+    pass
 
 default_args = [
-    ('--auth-username', 'admin'),
-    ('--auth-password', 'contrail123'),
-    ('--auth-tenant', 'admin'),
+    ('--auth-username', 'user-db'),
+    ('--auth-password', 'user'),
+    ('--auth-tenant', 'dev-ui'),
+    ('--auth-domain', 'dev'),
     ('--auth-region', 'RegionOne'),
-    ('--auth-server', '10.87.68.167'),
-    ('--api-server', '10.87.68.167'),
-    ('--tenant', 'demo')]
+    ('--auth-server', '127.0.0.1'),
+    #('--auth-url', '/v2.0/tokens'),
+    ('--auth-url', '/v3/auth/tokens'),
+    ('--api-server', '127.0.0.1'),
+    ('--tenant', 'dev-ui')]
+
+#default_args = [
+#    ('--auth-username', 'admin'),
+#    ('--auth-password', 'contrail123'),
+#    ('--auth-tenant', 'admin'),
+#    ('--auth-domain', 'default-domain'),
+#    ('--auth-region', 'RegionOne'),
+#    ('--auth-server', '127.0.0.1'),
+#    ('--auth-url', '/v2.0/tokens'),
+#    #('--auth-url', '/v3/auth/tokens'),
+#    ('--api-server', '127.0.0.1'),
+#    ('--tenant', 'demo')]
 
 
 class ConfigArgs(object):
     def __init__(self):
         pass
-
 
 def shell_cmd(cmd):
     output = subprocess.check_output(cmd, shell = True)
@@ -44,6 +63,7 @@ class ConfigObject(object):
         self.tenant = client.tenant
         self.obj_read_func = obj_read_func
         self.obj_list_func = obj_list_func
+        self.pp = pprint.PrettyPrinter(indent = 1, width = 80)
 
     def fqn_to_str(self, fq_name):
         fqn_str = ''
@@ -59,7 +79,7 @@ class ConfigObject(object):
                     continue
                 fq_name.append(item)
         else:
-            fq_name = ['default-domain', self.tenant.name, name]
+            fq_name = [self.tenant.fq_name[0], self.tenant.fq_name[1], name]
         if str:
             return to_fq_name_str(fq_name)
         else:
@@ -75,14 +95,15 @@ class ConfigObject(object):
                 print 'ERROR: Object %s is not found!' %(fq_name)
 
     def show_json(self, obj):
-        import json
-        print json.dumps(obj, default = self.vnc._obj_serializer_all,
-                indent=4, separators=(',', ': '))
+        if hasattr(self.vnc, '_obj_serializer_all'):
+            print json.dumps(obj, default = self.vnc._obj_serializer_all,
+                  indent=4, separators=(',', ': '))
+        else:
+            print json.dumps(obj, default = _obj_serializer_all,
+                  indent=4, separators=(',', ': '))
 
     def show_dict(self, obj):
-        import pprint
-        pp = pprint.PrettyPrinter(indent = 1, width = 80)
-        pp.pprint(self.vnc.obj_to_dict(obj))
+        self.pp.pprint(self.vnc.obj_to_dict(obj))
 
     def list(self, args):
         dict = self.obj_list_func()
@@ -185,7 +206,7 @@ class ConfigCni(ConfigObject):
         #from contrail_vrouter_api.vrouter_api import ContrailVRouterApi
         #api = ContrailVRouterApi()
         vn_id = self.vnc.fq_name_to_id('virtual-network',
-                ['default-domain', self.tenant.name, network])
+                [self.tenant.fq_name[0], self.tenant.fq_name[1], network])
         #api.add_port(vm.uuid, vmi.uuid, cni_name, mac,
         #        port_type = 'NovaVMPort', vn_id = vn_id)
         self.vrouter_port_add(mac, vmi.uuid, vm.uuid, vn_id, cni_name)
@@ -356,41 +377,33 @@ class ConfigIpam(ConfigObject):
                     dhcp_option_name = '4',
                     dhcp_option_value = ntp_server))
 
-    def add(self, name, dns_type, virtual_dns = None, tenant_dns = None,
-            domain_name = None, ntp_server = None):
-        create = False
-        obj = self.obj_get(name)
-        if not obj:
-            obj = vnc_api.NetworkIpam(name = name, parent_obj = self.tenant)
-            create = True
-        mgmt = obj.get_network_ipam_mgmt()
-        if not mgmt:
-            mgmt = vnc_api.IpamType()
-            obj.set_network_ipam_mgmt(mgmt)
-        self.add_dns(mgmt, dns_type, virtual_dns, tenant_dns)
-        self.add_dhcp(mgmt, domain_name, ntp_server)
-        if create:
-            try:
-                self.vnc.network_ipam_create(obj)
-            except Exception as e:
-                print 'ERROR: %s' %(str(e))
-        else:
-            self.vnc.network_ipam_update(obj)
+    def create(self, args):
+        obj = self.obj_get(args.name)
+        if obj:
+            print 'ERROR: IPAM %s exists!' %(args.name)
+            return
+        obj = vnc_api.NetworkIpam(name = args.name, parent_obj = self.tenant)
+        mgmt = vnc_api.IpamType()
+        obj.set_network_ipam_mgmt(mgmt)
+        try:
+            self.vnc.network_ipam_create(obj)
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
 
-    def delete(self, name, domain_name = None):
+    def delete(self, args):
         update = False
         obj = self.obj_get(name, msg = True)
         if not obj:
             return
-        if domain_name:
-            mgmt = obj.get_network_ipam_mgmt()
-            list = mgmt.get_dhcp_option_list()
-            for item in list.get_dhcp_option():
-                if (item.dhcp_option_name == '15') and \
-                    (item.dhcp_option_value == domain_name):
-                    list.delete_dhcp_option(item)
-                    break
-            update = True
+        #if domain_name:
+        #    mgmt = obj.get_network_ipam_mgmt()
+        #    list = mgmt.get_dhcp_option_list()
+        #    for item in list.get_dhcp_option():
+        #        if (item.dhcp_option_name == '15') and \
+        #            (item.dhcp_option_value == domain_name):
+        #            list.delete_dhcp_option(item)
+        #            break
+        #    update = True
         if update:
             self.vnc.network_ipam_update(obj)
         else:
@@ -413,7 +426,7 @@ class ConfigInstanceIp(ConfigObject):
 
     def create(self, args):
         try:
-            vn_fqn = ['default-domain', self.tenant.name, args.network]
+            vn_fqn = [self.tenant.fq_name[0], self.tenant.fq_name[1], args.network]
             vn_obj = self.vnc.virtual_network_read(fq_name = vn_fqn)
         except Exception as e:
             print 'ERROR: %s' %(str(e))
@@ -2528,17 +2541,18 @@ class ConfigVirtualMachine():
 
 
 class ConfigClient():
-    def __init__(self, auth_username, auth_password, auth_tenant, api_server,
-            region, auth_server, tenant):
+    def __init__(self, auth_username, auth_password, auth_domain, auth_tenant,
+            api_server, region, auth_server, auth_url, tenant):
         self.vnc = vnc_api.VncApi(username = auth_username,
                 password = auth_password, tenant_name = auth_tenant,
-                api_server_host = api_server, auth_host = auth_server)
+                domain_name = auth_domain, api_server_host = api_server,
+                auth_host = auth_server, auth_url = auth_url)
         self.nova = None
         if not tenant:
             tenant = auth_tenant
         try:
             self.tenant = self.vnc.project_read(
-                    fq_name = ['default-domain', tenant])
+                    fq_name = [auth_domain, tenant])
         except:
             self.tenant = None
 
@@ -2569,9 +2583,11 @@ class ConfigCli():
         self.parser = parser
         parser.add_argument('--auth-username', help = 'User name')
         parser.add_argument('--auth-password', help = 'Password')
-        parser.add_argument('--auth-tenant', help = 'Tenant name')
+        parser.add_argument('--auth-tenant', help = 'Auth tenant name')
+        parser.add_argument('--auth-domain', help = 'Auth domain name')
         parser.add_argument('--auth-region', help = 'Region name')
         parser.add_argument('--auth-server', help = 'Auth server address')
+        parser.add_argument('--auth-url', help = 'Auth URL')
         parser.add_argument('--api-server', help = 'API server address')
         parser.add_argument('--tenant', help = 'Tenant name')
 
@@ -2619,7 +2635,6 @@ class ConfigCli():
         p = ps_list.add_parser('iip', help = 'Instance IP')
         p.set_defaults(obj_class = ConfigInstanceIp, obj_func = 'list')
 
-
         p = ps_show.add_parser('iip', help = 'Instance IP')
         p.set_defaults(obj_class = ConfigInstanceIp, obj_func = 'show')
         self.add_show_args(p)
@@ -2642,6 +2657,22 @@ class ConfigCli():
         p.set_defaults(obj_class = ConfigInstanceIp, obj_func = 'delete')
         p.add_argument('id', metavar = '<UUID>',
                 help = 'The UUID of Instance IP')
+
+        #### IPAM ####
+        p = ps_list.add_parser('ipam', help = 'IPAM')
+        p.set_defaults(obj_class = ConfigIpam, obj_func = 'list')
+
+        p = ps_show.add_parser('ipam', help = 'IPAM')
+        p.set_defaults(obj_class = ConfigIpam, obj_func = 'show')
+        self.add_show_args(p)
+
+        p = ps_create.add_parser('ipam', help = 'IPAM')
+        p.set_defaults(obj_class = ConfigIpam, obj_func = 'create')
+        p.add_argument('name', metavar = '<name>', help = 'The name')
+
+        p = ps_delete.add_parser('ipam', help = 'IPAM')
+        p.set_defaults(obj_class = ConfigIpam, obj_func = 'delete')
+        p.add_argument('name', metavar = '<name>', help = 'The name')
 
         #### Loadbalancer ####
         p = ps_list.add_parser('lb', help = 'Loadbalancer')
@@ -3007,8 +3038,9 @@ class ConfigCli():
         #print args
         #return
         client = ConfigClient(args.auth_username, args.auth_password,
-                args.auth_tenant, args.api_server, args.auth_region,
-                args.auth_server, args.tenant)
+                args.auth_domain, args.auth_tenant, args.api_server,
+                args.auth_region, args.auth_server, args.auth_url,
+                args.tenant)
         obj = args.obj_class(client = client)
         func = getattr(obj, args.obj_func)
         func(args)
