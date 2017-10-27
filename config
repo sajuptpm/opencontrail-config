@@ -1924,6 +1924,8 @@ class ConfigPort(ConfigObject):
         #    self.add_irt(port_obj, args.irt)
         if args.mirror:
             self.add_mirror(obj, args.mirror)
+        if args.disable_policy:
+            obj.set_virtual_machine_interface_disable_policy(True)
 
         self.vnc.virtual_machine_interface_update(obj)
 
@@ -1979,6 +1981,9 @@ class ConfigPort(ConfigObject):
         #    update = True
         if args.mirror:
             self.delete_mirror(obj)
+            update = True
+        if args.disable_policy:
+            obj.set_virtual_machine_interface_disable_policy(False)
             update = True
 
         if update:
@@ -2849,11 +2854,15 @@ class ConfigCli():
                        'vtep-address=[ VTEP IP address ],' \
                        'vni=[ VNI of analyzer VN ],' \
                        'address=<analyzer IP address>')
+        p.add_argument('--disable-policy', action = 'store_true',
+                help='Disable policy')
 
         p = ps_delete.add_parser('port', help = 'Port/VMI')
         p.set_defaults(obj_class = ConfigPort, obj_func = 'delete')
         p.add_argument('name', metavar = '<name> | <id>', help = 'The name')
         p.add_argument('--mirror', action = 'store_true', help = 'Mirror')
+        p.add_argument('--disable-policy', action = 'store_true',
+                help='Disable policy')
         p.add_argument('--security-group', action = 'store_true',
                 help = 'Security group')
 
