@@ -16,30 +16,29 @@ try:
 except:
     pass
 
-default_args = [
+default_args_k3 = [
     ('--auth-username', 'user-db'),
     ('--auth-password', 'user'),
     ('--auth-tenant', 'dev-ui'),
     ('--auth-domain', 'dev'),
     ('--auth-region', 'RegionOne'),
     ('--auth-server', '127.0.0.1'),
-    #('--auth-url', '/v2.0/tokens'),
     ('--auth-url', '/v3/auth/tokens'),
     ('--api-server', '127.0.0.1'),
     ('--tenant', 'dev-ui')]
 
-#default_args = [
-#    ('--auth-username', 'admin'),
-#    ('--auth-password', 'contrail123'),
-#    ('--auth-tenant', 'admin'),
-#    ('--auth-domain', 'default-domain'),
-#    ('--auth-region', 'RegionOne'),
-#    ('--auth-server', '127.0.0.1'),
-#    ('--auth-url', '/v2.0/tokens'),
-#    #('--auth-url', '/v3/auth/tokens'),
-#    ('--api-server', '127.0.0.1'),
-#    ('--tenant', 'demo')]
+default_args_k2 = [
+    ('--auth-username', 'admin'),
+    ('--auth-password', 'contrail123'),
+    ('--auth-tenant', 'admin'),
+    ('--auth-domain', 'default-domain'),
+    ('--auth-region', 'RegionOne'),
+    ('--auth-server', '127.0.0.1'),
+    ('--auth-url', '/v2.0/tokens'),
+    ('--api-server', '127.0.0.1'),
+    ('--tenant', 'demo')]
 
+default_args = default_args_k2
 
 class ConfigArgs(object):
     def __init__(self):
