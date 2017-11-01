@@ -48,27 +48,21 @@ def shell_cmd(cmd):
     output = subprocess.check_output(cmd, shell = True)
     return output
 
-def to_fq_name_str(fq_name_list):
-    fq_name_str = ''
-    for item in fq_name_list:
-        fq_name_str += '%s:' %(item)
-    return fq_name_str.rstrip(':')
-
-
 class ConfigObject(object):
-    def __init__(self, client, obj_read_func = None, obj_list_func = None):
+    def __init__(self, client, parent = None,
+            obj_read_func = None, obj_list_func = None):
         self.client = client
         self.vnc = client.vnc
-        self.tenant = client.tenant
+        self.parent = parent
         self.obj_read_func = obj_read_func
         self.obj_list_func = obj_list_func
         self.pp = pprint.PrettyPrinter(indent = 1, width = 80)
 
-    def fqn_to_str(self, fq_name):
-        fqn_str = ''
-        for item in fq_name:
-            fqn_str += item + ':'
-        return fqn_str.rstrip(':')
+    def fq_name_to_str(self, fq_name):
+        fq_name_str = ''
+        for name in fq_name:
+            fq_name_str += name + ':'
+        return fq_name_str.rstrip(':')
 
     def fq_name_get(self, name, str = False):
         if ':' in name:
@@ -77,10 +71,12 @@ class ConfigObject(object):
                 if not item:
                     continue
                 fq_name.append(item)
+        elif self.parent:
+            fq_name = self.parent.fq_name + [name]
         else:
-            fq_name = [self.tenant.fq_name[0], self.tenant.fq_name[1], name]
+            fq_name = [name]
         if str:
-            return to_fq_name_str(fq_name)
+            return self.fq_name_to_str(fq_name)
         else:
             return fq_name
 
@@ -106,16 +102,17 @@ class ConfigObject(object):
 
     def list(self, args):
         dict = self.obj_list_func()
-        for item in dict[dict.keys()[0]]:
-            print self.fqn_to_str(item['fq_name'])
-            continue
-            p_len = len(self.parent_fq_name)
-            if (item['fq_name'][:p_len] == self.parent_fq_name):
-                name_str = item['fq_name'][p_len]
-                if (len(item['fq_name']) > (p_len + 1)):
-                    for name in item['fq_name'][(p_len + 1):]:
-                        name_str += ':%s' %(name)
-                print name_str
+        if self.parent:
+            print 'Parent: %s' %(self.fq_name_to_str(self.parent.fq_name))
+            for item in dict[dict.keys()[0]]:
+                if args.all:
+                    print '%s' %(self.fq_name_to_str(item['fq_name']))
+                else:
+                    if (item['fq_name'][0:-1] == self.parent.fq_name):
+                        print '    %s' %(item['fq_name'][-1])
+        else:
+            for item in dict[dict.keys()[0]]:
+                print '%s' %(self.fq_name_to_str(item['fq_name']))
 
     def show(self, args):
         obj = self.obj_get(args.name, msg = True)
@@ -205,7 +202,7 @@ class ConfigCni(ConfigObject):
         #from contrail_vrouter_api.vrouter_api import ContrailVRouterApi
         #api = ContrailVRouterApi()
         vn_id = self.vnc.fq_name_to_id('virtual-network',
-                [self.tenant.fq_name[0], self.tenant.fq_name[1], network])
+                self.parent.fq_name + [network])
         #api.add_port(vm.uuid, vmi.uuid, cni_name, mac,
         #        port_type = 'NovaVMPort', vn_id = vn_id)
         self.vrouter_port_add(mac, vmi.uuid, vm.uuid, vn_id, cni_name)
@@ -305,7 +302,8 @@ class ConfigCni(ConfigObject):
 
 class ConfigIpam(ConfigObject):
     def __init__(self, client):
-        super(ConfigIpam, self).__init__(client,
+        parent = client.tenant
+        super(ConfigIpam, self).__init__(client, parent,
                 client.vnc.network_ipam_read,
                 client.vnc.network_ipams_list)
 
@@ -381,7 +379,7 @@ class ConfigIpam(ConfigObject):
         if obj:
             print 'ERROR: IPAM %s exists!' %(args.name)
             return
-        obj = vnc_api.NetworkIpam(name = args.name, parent_obj = self.tenant)
+        obj = vnc_api.NetworkIpam(name = args.name, parent_obj = self.parent)
         mgmt = vnc_api.IpamType()
         obj.set_network_ipam_mgmt(mgmt)
         try:
@@ -414,7 +412,7 @@ class ConfigIpam(ConfigObject):
 
 class ConfigInstanceIp(ConfigObject):
     def __init__(self, client):
-        super(ConfigInstanceIp, self).__init__(client,
+        super(ConfigInstanceIp, self).__init__(client, None,
                 client.vnc.instance_ip_read,
                 client.vnc.instance_ips_list)
 
@@ -425,7 +423,7 @@ class ConfigInstanceIp(ConfigObject):
 
     def create(self, args):
         try:
-            vn_fqn = [self.tenant.fq_name[0], self.tenant.fq_name[1], args.network]
+            vn_fqn = self.parent.fq_name + [args.network]
             vn_obj = self.vnc.virtual_network_read(fq_name = vn_fqn)
         except Exception as e:
             print 'ERROR: %s' %(str(e))
@@ -465,7 +463,7 @@ class ConfigInstanceIp(ConfigObject):
 
 class ConfigVm(ConfigObject):
     def __init__(self, client):
-        super(ConfigVm, self).__init__(client,
+        super(ConfigVm, self).__init__(client, None,
                 client.vnc.virtual_machine_read,
                 client.vnc.virtual_machines_list)
 
@@ -485,7 +483,9 @@ class ConfigVm(ConfigObject):
 
 class ConfigVirtualRouter(ConfigObject):
     def __init__(self, client):
-        super(ConfigVirtualRouter, self).__init__(client,
+        parent = client.vnc.global_system_config_read(
+                fq_name = ['default-global-system-config'])
+        super(ConfigVirtualRouter, self).__init__(client, parent,
                 client.vnc.virtual_router_read,
                 client.vnc.virtual_routers_list)
 
@@ -518,7 +518,8 @@ class ConfigVirtualRouter(ConfigObject):
 
 class ConfigAcl(ConfigObject):
     def __init__(self, client):
-        super(ConfigAcl, self).__init__(client,
+        parent = client.tenant
+        super(ConfigAcl, self).__init__(client, parent,
                 client.vnc.access_control_list_read,
                 client.vnc.access_control_lists_list)
 
@@ -536,7 +537,8 @@ class ConfigAcl(ConfigObject):
 
 class ConfigLoadbalancer(ConfigObject):
     def __init__(self, client):
-        super(ConfigLoadbalancer, self).__init__(client,
+        parent = client.tenant
+        super(ConfigLoadbalancer, self).__init__(client, parent,
                 client.vnc.loadbalancer_read,
                 client.vnc.loadbalancers_list)
 
@@ -554,7 +556,8 @@ class ConfigLoadbalancer(ConfigObject):
 
 class ConfigLoadbalancerListener(ConfigObject):
     def __init__(self, client):
-        super(ConfigLoadbalancerListener, self).__init__(client,
+        parent = client.tenant
+        super(ConfigLoadbalancerListener, self).__init__(client, parent,
                 client.vnc.loadbalancer_listener_read,
                 client.vnc.loadbalancer_listeners_list)
 
@@ -566,7 +569,8 @@ class ConfigLoadbalancerListener(ConfigObject):
 
 class ConfigLoadbalancerPool(ConfigObject):
     def __init__(self, client):
-        super(ConfigLoadbalancerPool, self).__init__(client,
+        parent = client.tenant
+        super(ConfigLoadbalancerPool, self).__init__(client, parent,
                 client.vnc.loadbalancer_pool_read,
                 client.vnc.loadbalancer_pools_list)
 
@@ -578,7 +582,7 @@ class ConfigLoadbalancerPool(ConfigObject):
 
 class ConfigLoadbalancerMember(ConfigObject):
     def __init__(self, client):
-        super(ConfigLoadbalancerMember, self).__init__(client,
+        super(ConfigLoadbalancerMember, self).__init__(client, None,
                 client.vnc.loadbalancer_member_read,
                 client.vnc.loadbalancer_members_list)
 
@@ -590,7 +594,9 @@ class ConfigLoadbalancerMember(ConfigObject):
 
 class ConfigServiceApplianceSet(ConfigObject):
     def __init__(self, client):
-        super(ConfigServiceApplianceSet, self).__init__(client,
+        parent = client.vnc.global_system_config_read(
+                fq_name = ['default-global-system-config'])
+        super(ConfigServiceApplianceSet, self).__init__(client, parent,
                 client.vnc.service_appliance_set_read,
                 client.vnc.service_appliance_sets_list)
 
@@ -614,15 +620,15 @@ class ConfigServiceApplianceSet(ConfigObject):
             print 'ERROR: %s' %(str(e))
 
     def delete(self, args):
-        fqn = ['default-global-system-config', args.name]
+        obj = self.obj_get(args.name, msg = True)
         try:
-            self.vnc.service_appliance_set_delete(fq_name = fqn)
+            self.vnc.service_appliance_set_delete(id = obj.uuid)
         except Exception as e:
             print 'ERROR: %s' %(str(e))
 
 class ConfigServiceAppliance(ConfigObject):
     def __init__(self, client):
-        super(ConfigServiceAppliance, self).__init__(client,
+        super(ConfigServiceAppliance, self).__init__(client, None,
                 client.vnc.service_appliance_read,
                 client.vnc.service_appliances_list)
 
@@ -634,7 +640,8 @@ class ConfigServiceAppliance(ConfigObject):
 
 class ConfigTenant(ConfigObject):
     def __init__(self, client):
-        super(ConfigTenant, self).__init__(client,
+        parent = client.vnc.domain_read(fq_name = [client.tenant.fq_name[0]])
+        super(ConfigTenant, self).__init__(client, parent,
                 client.vnc.project_read,
                 client.vnc.projects_list)
 
@@ -644,8 +651,7 @@ class ConfigTenant(ConfigObject):
         print 'UUID: %s' %(obj.uuid)
 
     def create(self, args):
-        domain = self.vnc.domain_read(fq_name = ['default-domain'])
-        obj = vnc_api.Project(name = args.name, parent_obj = domain)
+        obj = vnc_api.Project(name = args.name, parent_obj = self.parent)
         try:
             self.vnc.project_create(obj)
         except Exception as e:
@@ -698,7 +704,7 @@ class ConfigTenant(ConfigObject):
 
 class ConfigPolicy(ConfigObject):
     def __init__(self, client):
-        super(ConfigPolicy, self).__init__(client,
+        super(ConfigPolicy, self).__init__(client, client.tenant,
                 client.vnc.network_policy_read,
                 client.vnc.network_policys_list)
 
@@ -847,7 +853,7 @@ class ConfigPolicy(ConfigObject):
 
         rules = vnc_api.PolicyEntriesType(policy_rule = rule_list)
         obj = vnc_api.NetworkPolicy(name = args.name,
-                parent_obj = self.tenant,
+                parent_obj = self.parent,
                 network_policy_entries = rules)
         try:
             self.vnc.network_policy_create(obj)
@@ -903,8 +909,7 @@ class ConfigPolicy(ConfigObject):
 
 class ConfigSecurityGroup(ConfigObject):
     def __init__(self, client):
-        super(ConfigSecurityGroup, self).__init__(client,
-                ['default-domain', client.tenant.name],
+        super(ConfigSecurityGroup, self).__init__(client, client.tenant,
                 client.vnc.security_group_read,
                 client.vnc.security_groups_list)
 
@@ -1000,7 +1005,7 @@ class ConfigSecurityGroup(ConfigObject):
         else:
             rules = vnc_api.PolicyEntriesType(policy_rule = [rule])
             obj = vnc_api.SecurityGroup(name = name,
-                    parent_obj = self.tenant,
+                    parent_obj = self.parent,
                     security_group_entries = rules)
             try:
                 self.vnc.security_group_create(obj)
@@ -1030,7 +1035,7 @@ class ConfigSecurityGroup(ConfigObject):
 
 class ConfigNetwork(ConfigObject):
     def __init__(self, client):
-        super(ConfigNetwork, self).__init__(client,
+        super(ConfigNetwork, self).__init__(client, client.tenant,
                 client.vnc.virtual_network_read,
                 client.vnc.virtual_networks_list)
 
@@ -1201,7 +1206,7 @@ class ConfigNetwork(ConfigObject):
         if obj:
             print 'ERROR: Virtual network %s exists!' %(args.name)
             return
-        obj = vnc_api.VirtualNetwork(name = args.name, parent_obj = self.tenant)
+        obj = vnc_api.VirtualNetwork(name = args.name, parent_obj = self.parent)
         #if args.l2:
         #    prop = vnc_api.VirtualNetworkType(forwarding_mode = 'l2')
         #    obj.set_virtual_network_properties(prop)
@@ -1338,7 +1343,8 @@ class ConfigFloatingIpPool(ConfigObject):
 
 class ConfigServiceTemplate(ConfigObject):
     def __init__(self, client):
-        super(ConfigServiceTemplate, self).__init__(client,
+        parent = client.vnc.domain_read(fq_name = [client.tenant.fq_name[0]])
+        super(ConfigServiceTemplate, self).__init__(client, parent,
                 client.vnc.service_template_read,
                 client.vnc.service_templates_list)
 
@@ -1401,7 +1407,7 @@ class ConfigServiceTemplate(ConfigObject):
 
 class ConfigServiceInstance(ConfigObject):
     def __init__(self, client):
-        super(ConfigServiceInstance, self).__init__(client,
+        super(ConfigServiceInstance, self).__init__(client, client.tenant,
                 client.vnc.service_instance_read,
                 client.vnc.service_instances_list)
 
@@ -1421,7 +1427,7 @@ class ConfigServiceInstance(ConfigObject):
                         id = vmi_bref['uuid'])
                 vmi_vn['obj'] = vmi
                 vn_fqn = vmi.get_virtual_network_refs()[0]['to']
-                vmi_vn['network'] = to_fq_name_str(vn_fqn)
+                vmi_vn['network'] = self.fq_name_to_str(vn_fqn)
                 vmi_vn_list.append(vmi_vn)
 
             pt = {}
@@ -1557,7 +1563,6 @@ class ConfigServiceInstance(ConfigObject):
 class ConfigRouteTable(ConfigObject):
     def __init__(self, client):
         super(ConfigRouteTable, self).__init__(client,
-                ['default-domain', client.tenant.name],
                 client.vnc.route_table_read,
                 client.vnc.route_tables_list)
 
@@ -1632,7 +1637,6 @@ class ConfigRouteTable(ConfigObject):
 class ConfigInterfaceRouteTable(ConfigObject):
     def __init__(self, client):
         super(ConfigInterfaceRouteTable, self).__init__(client,
-                ['default-domain', client.tenant.name],
                 client.vnc.interface_route_table_read,
                 client.vnc.interface_route_tables_list)
 
@@ -1707,7 +1711,7 @@ class ConfigInterfaceRouteTable(ConfigObject):
 
 class ConfigPort(ConfigObject):
     def __init__(self, client):
-        super(ConfigPort, self).__init__(client,
+        super(ConfigPort, self).__init__(client, client.tenant,
                 client.vnc.virtual_machine_interface_read,
                 client.vnc.virtual_machine_interfaces_list)
 
@@ -1794,7 +1798,7 @@ class ConfigPort(ConfigObject):
 
     def add_ip(self, obj, address, network, shared):
         net_obj = self.vnc.virtual_network_read(
-                fq_name = ['default-domain', self.tenant.name, network])
+                fq_name = self.parent.fq_name + [network])
         ip_obj = vnc_api.InstanceIp(name = str(uuid.uuid4()))
         ip_obj.uuid = ip_obj.name
         ip_obj.add_virtual_network(net_obj)
@@ -1811,13 +1815,13 @@ class ConfigPort(ConfigObject):
 
     def add_network(self, obj, network):
         net_obj = self.vnc.virtual_network_read(
-                fq_name = ['default-domain', self.tenant.name, network])
+                fq_name = self.parent.fq_name + [network])
         obj.add_virtual_network(net_obj)
 
     def add_sg(self, obj, sg):
         try:
             sg_obj = self.vnc.security_group_read(
-                    fq_name = ['default-domain', self.tenant.name, sg])
+                    fq_name = self.parent.fq_name + [sg])
         except Exception as e:
             print 'ERROR: %s' %(str(e))
             return
@@ -1826,7 +1830,7 @@ class ConfigPort(ConfigObject):
     def add_irt(self, obj, irt):
         try:
             table_obj = self.vnc.interface_route_table_read(
-                    fq_name = ['default-domain', self.tenant.name, irt])
+                    fq_name = self.parent.fq_name + [irt])
         except Exception as e:
             print 'ERROR: %s' %(str(e))
             return
@@ -1879,11 +1883,11 @@ class ConfigPort(ConfigObject):
         if (args.name == 'id'):
             id = str(uuid.uuid4())
             vmi = vnc_api.VirtualMachineInterface(name = id,
-                    parent_obj = self.tenant)
+                    parent_obj = self.parent)
             vmi.uuid = id
         else:
             vmi = vnc_api.VirtualMachineInterface(name = args.name,
-                    parent_obj = self.tenant)
+                    parent_obj = self.parent)
 
         l = args.network.split(':')
         network = l[0]
@@ -1891,7 +1895,7 @@ class ConfigPort(ConfigObject):
         if len(l) > 1:
             subnet_list = l[1:]
         vn = self.vnc.virtual_network_read(
-                fq_name = ['default-domain', self.tenant.name, network])
+                fq_name = self.parent.fq_name + [network])
         vmi.set_virtual_network(vn)
         if hasattr(args, 'vm') and args.vm:
             vm_obj = self.vnc.virtual_machine_read(id = args.vm)
@@ -1943,7 +1947,7 @@ class ConfigPort(ConfigObject):
         '''
         try:
             sg_obj = self.vnc.security_group_read(
-                    fq_name = ['default-domain', self.tenant.name, sg])
+                    fq_name = self.parent.fq_name + [sg])
         except Exception as e:
             print 'ERROR: %s' %(str(e))
             return
@@ -1953,7 +1957,7 @@ class ConfigPort(ConfigObject):
     def delete_irt(self, obj, irt):
         try:
             table_obj = self.vnc.interface_route_table_read(
-                    fq_name = ['default-domain', self.tenant.name, irt])
+                    fq_name = self.parent.fq_name + [irt])
         except Exception as e:
             print 'ERROR: %s' %(str(e))
             return
@@ -2273,10 +2277,10 @@ class ConfigVirtualDns():
 
 class ConfigBgpRouter(ConfigObject):
     def __init__(self, client):
-        self.parent_fq_name = ['default-domain', 'default-project',
-                'ip-fabric', '__default__']
-        super(ConfigBgpRouter, self).__init__(client,
-                self.parent_fq_name,
+        parent = client.vnc.routing_instance_read(
+                fq_name = ['default-domain', 'default-project',
+                           'ip-fabric', '__default__'])
+        super(ConfigBgpRouter, self).__init__(client, parent,
                 client.vnc.bgp_router_read,
                 client.vnc.bgp_routers_list)
 
@@ -2304,68 +2308,102 @@ class ConfigBgpRouter(ConfigObject):
             print '    %s' %(item)
         self.show_ref_bgp_router(obj)
 
-    def add(self, name, vendor = None, asn = None, address = None,
-            identifier = None, control = None, peer_list = None):
-        if not identifier:
-            identifier = address
-        af_list = ['route-target', 'inet-vpn', 'e-vpn', 'inet6-vpn']
-        if control:
-            af = vnc_api.AddressFamilies(af_list + ['erm-vpn'])
-            vendor = 'contrail'
-        else:
-            af = vnc_api.AddressFamilies(af_list)
-
+    def cn_full_mesh(self):
+        af = vnc_api.AddressFamilies(['route-target', 'inet-vpn', 'e-vpn',
+                'inet6-vpn', 'erm-vpn'])
         sess_attr_list = [vnc_api.BgpSessionAttributes(address_families = af)]
         sess_list = [vnc_api.BgpSession(attributes = sess_attr_list)]
         peer_attrs = vnc_api.BgpPeeringAttributes(session = sess_list)
+        obj_list = []
+        for br in self.vnc.bgp_routers_list()['bgp-routers']:
+            obj = self.vnc.bgp_router_read(id = br['uuid'])
+            obj_list.append(obj)
+        for br in obj_list:
+            for r in obj_list:
+                if (br.uuid == r.uuid):
+                    continue
+                br.add_bgp_router(r, peer_attrs)
+            self.vnc.bgp_router_update(br)
 
-        obj = self.obj_get(name)
-        if obj:
-            update = True
-            params = obj.get_bgp_router_parameters()
-        else:
-            update = False
-            ri = self.vnc.routing_instance_read(fq_name = self.parent_fq_name)
-            obj = vnc_api.BgpRouter(name, ri)
-            params = vnc_api.BgpRouterParams(vendor = vendor, port = 179,
-                    address_families = af)
-
-        if asn:
-            params.autonomous_system = int(asn)
-        if address:
-            params.address = address
-            params.identifier = address
-        obj.set_bgp_router_parameters(params)
-        if peer_list:
-            for item in peer_list:
-                peer_obj = self.vnc.bgp_router_read(
-                        fq_name = self.parent_fq_name + [item])
-                obj.add_bgp_router(peer_obj, peer_attrs)
-
-        if update:
-            self.vnc.bgp_router_update(obj)
-        else:
-            try:
-                id = self.vnc.bgp_router_create(obj)
-            except Exception as e:
-                print 'ERROR: %s' %(str(e))
+    def add_peer(self, obj, peer_list):
+        af = vnc_api.AddressFamilies(['route-target', 'inet-vpn', 'e-vpn',
+                'inet6-vpn'])
+        sess_attr_list = [vnc_api.BgpSessionAttributes(address_families = af)]
+        sess_list = [vnc_api.BgpSession(attributes = sess_attr_list)]
+        peer_attrs = vnc_api.BgpPeeringAttributes(session = sess_list)
+        peer_obj_list = []
+        for name in peer_list:
+            obj = self.obj_get(name, msg = True)
+            if not obj:
                 return
+            peer_obj_list.append(obj)
+        for peer_obj in peer_obj_list:
+            obj.add_bgp_router(peer_obj, peer_attrs)
+            peer_obj.add_bgp_router(obj, peer_attrs)
+            self.vnc.bgp_router_update(peer_obj)
+        self.vnc.bgp_router_update(obj)
 
-    def delete(self, name, peer_list):
-        obj = self.obj_get(name, msg = True)
+    def create(self, args):
+        obj = self.obj_get(args.name)
+        if obj:
+            print 'ERROR: BGP Router %s exists!' %(args.name)
+            return
+        obj = vnc_api.BgpRouter(name = args.name, parent_obj = self.parent)
+        params = vnc_api.BgpRouterParams()
+        params.port = 179
+        af_list = ['route-target', 'inet-vpn', 'e-vpn', 'inet6-vpn']
+        if args.control:
+            params.address_families = vnc_api.AddressFamilies(
+                    af_list + ['erm-vpn'])
+            params.vendor = 'contrail'
+        else:
+            params.address_families = vnc_api.AddressFamilies(af_list)
+            params.vendor = args.vendor
+        params.autonomous_system = 64512
+        if args.asn:
+            params.autonomous_system = int(asn)
+        params.address = args.address
+        params.identifier = args.address
+        obj.set_bgp_router_parameters(params)
+        try:
+            self.vnc.bgp_router_create(obj)
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
+        # API server will add peer reference for all control nodes.
+        #if args.control:
+        #    self.cn_full_mesh()
+
+        # API server will add peer reference for BGP node.
+        #if args.peer:
+        #    self.add_peer(obj, args.peer)
+
+    def delete_peer_ref(self, obj):
+        peer_obj_list = []
+        for br in self.vnc.bgp_routers_list()['bgp-routers']:
+            if (br['uuid'] == obj.uuid):
+                continue
+            peer_obj = self.vnc.bgp_router_read(id = br['uuid'])
+            peer_obj_list.append(peer_obj)
+        for peer_obj in peer_obj_list:
+            peer_obj.del_bgp_router(obj)
+            self.vnc.bgp_router_update(peer_obj)
+
+    def delete(self, args):
+        obj = self.obj_get(args.name, msg = True)
         if not obj:
             return
         update = False
-        if peer_list:
-            update = True
-            for item in peer_list:
-                peer_obj = self.vnc.bgp_router_read(
-                        fq_name = self.parent_fq_name + [item])
-                obj.del_bgp_router(peer_obj)
+        #if args.peer:
+        #    update = True
+        #    for item in args.peer:
+        #        peer_obj = self.vnc.bgp_router_read(
+        #                fq_name = self.parent_fq_name + [item])
+        #        obj.del_bgp_router(peer_obj)
 
         if update:
             self.vnc.bgp_router_update(obj)
         else:
+            #self.delete_peer_ref(obj)
             self.vnc.bgp_router_delete(id = obj.uuid)
 
 
@@ -2573,10 +2611,17 @@ class ConfigCli():
                 return value
         return kwargs.get('default', '')
 
-    def add_show_args(self, sp, default_name = None):
-        sp.add_argument('name', default = default_name,
+    def add_common_parser(self, obj_name, obj_desc, obj_class,
+            ps_list, ps_show):
+        p = ps_list.add_parser(obj_name, help = obj_desc)
+        p.set_defaults(obj_class = obj_class, obj_func = 'list')
+        p.add_argument('--all', action = 'store_true', help = 'All objects')
+
+        p = ps_show.add_parser(obj_name, help = obj_desc)
+        p.set_defaults(obj_class = obj_class, obj_func = 'show')
+        p.add_argument('name', default = None,
                 metavar = '<name>', help = 'The name')
-        sp.add_argument('--format',
+        p.add_argument('--format',
                 choices = ['default', 'json', 'dump', 'dict'],
                 default = 'default', metavar = '<format>',
                 help = 'The object format ' \
@@ -2609,17 +2654,36 @@ class ConfigCli():
         ps_add = opp_add.add_subparsers(metavar = '<object>')
 
         #### ACL ####
-        p = ps_list.add_parser('acl', help = 'Access Control List')
-        p.set_defaults(obj_class = ConfigAcl, obj_func = 'list')
+        self.add_common_parser('acl', 'Access Control List',
+                ConfigAcl, ps_list, ps_show)
 
-        p = ps_show.add_parser('acl', help = 'Access Control List')
-        p.set_defaults(obj_class = ConfigAcl, obj_func = 'show')
-        self.add_show_args(p)
+        #### BGP Router ####
+        self.add_common_parser('bgp-router', 'BGP Router',
+                ConfigBgpRouter, ps_list, ps_show)
+
+        p = ps_create.add_parser('bgp-router', help = 'BGP Router')
+        p.set_defaults(obj_class = ConfigBgpRouter, obj_func = 'create')
+        p.add_argument('name', metavar = '<hostname>',
+                help='Hostname')
+        p.add_argument('--address', metavar = '<address>', required = True,
+                help = 'IPv4 or IPv6 address')
+        p.add_argument('--control', action = 'store_true',
+                help = 'Contrail control node')
+        p.add_argument('--asn', metavar = '<ASN>',
+                help = 'Autonomous System Number')
+        p.add_argument('--vendor', metavar = '<name>',
+                help = 'Vendor name')
+        p.add_argument('--peer', action = 'append', metavar = '<name>',
+                help = 'Peer name')
+
+        p = ps_delete.add_parser('bgp-router', help = 'BGP Router')
+        p.set_defaults(obj_class = ConfigBgpRouter, obj_func = 'delete')
+        p.add_argument('name', metavar = '<hostname>',
+                help='Hostname')
 
         #### Container Network Interface ####
-        p = ps_show.add_parser('cni', help = 'Container Network Interface')
-        p.set_defaults(obj_class = ConfigCni, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('cni', 'Container Network Interface',
+                ConfigCni, ps_list, ps_show)
 
         p = ps_create.add_parser('cni', help = 'Container Network Interface')
         p.set_defaults(obj_class = ConfigCni, obj_func = 'create')
@@ -2636,12 +2700,8 @@ class ConfigCli():
                 help='Container ID')
 
         #### Instance IP ####
-        p = ps_list.add_parser('iip', help = 'Instance IP')
-        p.set_defaults(obj_class = ConfigInstanceIp, obj_func = 'list')
-
-        p = ps_show.add_parser('iip', help = 'Instance IP')
-        p.set_defaults(obj_class = ConfigInstanceIp, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('iip', 'Instance IP',
+                ConfigInstanceIp, ps_list, ps_show)
 
         p = ps_create.add_parser('iip', help = 'Instance IP')
         p.set_defaults(obj_class = ConfigInstanceIp, obj_func = 'create')
@@ -2663,12 +2723,8 @@ class ConfigCli():
                 help = 'The UUID of Instance IP')
 
         #### IPAM ####
-        p = ps_list.add_parser('ipam', help = 'IPAM')
-        p.set_defaults(obj_class = ConfigIpam, obj_func = 'list')
-
-        p = ps_show.add_parser('ipam', help = 'IPAM')
-        p.set_defaults(obj_class = ConfigIpam, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('ipam', 'IPAM',
+                ConfigIpam, ps_list, ps_show)
 
         p = ps_create.add_parser('ipam', help = 'IPAM')
         p.set_defaults(obj_class = ConfigIpam, obj_func = 'create')
@@ -2679,12 +2735,8 @@ class ConfigCli():
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
         #### Loadbalancer ####
-        p = ps_list.add_parser('lb', help = 'Loadbalancer')
-        p.set_defaults(obj_class = ConfigLoadbalancer, obj_func = 'list')
-
-        p = ps_show.add_parser('lb', help = 'Loadbalancer')
-        p.set_defaults(obj_class = ConfigLoadbalancer, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('lb', 'Loadbalancer',
+                ConfigLoadbalancer, ps_list, ps_show)
 
         p = ps_create.add_parser('lb', help = 'Loadbalancer')
         p.set_defaults(obj_class = ConfigLoadbalancer, obj_func = 'create')
@@ -2701,14 +2753,8 @@ class ConfigCli():
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
         #### Loadbalancer Listener ####
-        p = ps_list.add_parser('lb-listener', help = 'Loadbalancer Listener')
-        p.set_defaults(obj_class = ConfigLoadbalancerListener,
-                obj_func = 'list')
-
-        p = ps_show.add_parser('lb-listener', help = 'Loadbalancer Listener')
-        p.set_defaults(obj_class = ConfigLoadbalancerListener,
-                obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('lb-listener', 'Loadbalancer Listener',
+                ConfigLoadbalancerListener, ps_list, ps_show)
 
         p = ps_create.add_parser('lb-listener', help = 'Loadbalancer Listener')
         p.set_defaults(obj_class = ConfigLoadbalancerListener,
@@ -2727,12 +2773,8 @@ class ConfigCli():
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
         #### Loadbalancer Pool ####
-        p = ps_list.add_parser('lb-pool', help = 'Loadbalancer Pool')
-        p.set_defaults(obj_class = ConfigLoadbalancerPool, obj_func = 'list')
-
-        p = ps_show.add_parser('lb-pool', help = 'Loadbalancer Pool')
-        p.set_defaults(obj_class = ConfigLoadbalancerPool, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('lb-pool', 'Loadbalancer Pool',
+                ConfigLoadbalancerPool, ps_list, ps_show)
 
         p = ps_create.add_parser('lb-pool', help = 'Loadbalancer Pool')
         p.set_defaults(obj_class = ConfigLoadbalancerPool, obj_func = 'create')
@@ -2749,12 +2791,8 @@ class ConfigCli():
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
         #### Loadbalancer Member ####
-        p = ps_list.add_parser('lb-member', help = 'Loadbalancer Member')
-        p.set_defaults(obj_class = ConfigLoadbalancerMember, obj_func = 'list')
-
-        p = ps_show.add_parser('lb-member', help = 'Loadbalancer Member')
-        p.set_defaults(obj_class = ConfigLoadbalancerMember, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('lb-member', 'Loadbalancer Member',
+                ConfigLoadbalancerMember, ps_list, ps_show)
 
         p = ps_create.add_parser('lb-member', help = 'Loadbalancer Member')
         p.set_defaults(obj_class = ConfigLoadbalancerMember,
@@ -2775,12 +2813,8 @@ class ConfigCli():
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
         #### Policy ####
-        p = ps_list.add_parser('policy', help = 'Network policy')
-        p.set_defaults(obj_class = ConfigPolicy, obj_func = 'list')
-
-        p = ps_show.add_parser('policy', help = 'Network policy')
-        p.set_defaults(obj_class = ConfigPolicy, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('policy', 'Network Policy',
+                ConfigPolicy, ps_list, ps_show)
 
         p = ps_create.add_parser('policy', help = 'Network policy')
         p.set_defaults(obj_class = ConfigPolicy, obj_func = 'create')
@@ -2823,12 +2857,8 @@ class ConfigCli():
                        'index=<index>')
 
         #### Port ####
-        p = ps_list.add_parser('port', help = 'Port/VMI')
-        p.set_defaults(obj_class = ConfigPort, obj_func = 'list')
-
-        p = ps_show.add_parser('port', help = 'Port/VMI')
-        p.set_defaults(obj_class = ConfigPort, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('port', 'Port/VMI',
+                ConfigPort, ps_list, ps_show)
 
         p = ps_create.add_parser('port', help = 'Port/VMI')
         p.set_defaults(obj_class = ConfigPort, obj_func = 'create')
@@ -2866,22 +2896,12 @@ class ConfigCli():
                 help = 'Security group')
 
         #### Service Appliance ####
-        p = ps_list.add_parser('sa', help = 'Service Appliance')
-        p.set_defaults(obj_class = ConfigServiceAppliance, obj_func = 'list')
-
-        p = ps_show.add_parser('sa', help = 'Service Appliance')
-        p.set_defaults(obj_class = ConfigServiceAppliance, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('sa', 'Service Appliance',
+                ConfigServiceAppliance, ps_list, ps_show)
 
         #### Service Appliance Set ####
-        p = ps_list.add_parser('sas', help = 'Service Appliance Set')
-        p.set_defaults(obj_class = ConfigServiceApplianceSet,
-                obj_func = 'list')
-
-        p = ps_show.add_parser('sas', help = 'Service Appliance Set')
-        p.set_defaults(obj_class = ConfigServiceApplianceSet,
-                obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('sas', 'Service Appliance Set',
+                ConfigServiceApplianceSet, ps_list, ps_show)
 
         p = ps_create.add_parser('sas', help = 'Service Appliance Set')
         p.set_defaults(obj_class = ConfigServiceApplianceSet,
@@ -2898,12 +2918,8 @@ class ConfigCli():
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
         #### Service Instance ####
-        p = ps_list.add_parser('si', help = 'Service Instance')
-        p.set_defaults(obj_class = ConfigServiceInstance, obj_func = 'list')
-
-        p = ps_show.add_parser('si', help = 'Service Instance')
-        p.set_defaults(obj_class = ConfigServiceInstance, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('si', 'Service Instance',
+                ConfigServiceInstance, ps_list, ps_show)
 
         p = ps_create.add_parser('si', help = 'Service Instance')
         p.set_defaults(obj_class = ConfigServiceInstance, obj_func = 'create')
@@ -2930,12 +2946,8 @@ class ConfigCli():
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
         #### Service Template ####
-        p = ps_list.add_parser('st', help = 'Service Template')
-        p.set_defaults(obj_class = ConfigServiceTemplate, obj_func = 'list')
-
-        p = ps_show.add_parser('st', help = 'Service Template')
-        p.set_defaults(obj_class = ConfigServiceTemplate, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('st', 'Service Template',
+                ConfigServiceTemplate, ps_list, ps_show)
 
         p = ps_create.add_parser('st', help = 'Service Template')
         p.set_defaults(obj_class = ConfigServiceTemplate, obj_func = 'create')
@@ -2960,12 +2972,8 @@ class ConfigCli():
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
         #### Tenant ####
-        p = ps_list.add_parser('tenant', help = 'Tenant')
-        p.set_defaults(obj_class = ConfigTenant, obj_func = 'list')
-
-        p = ps_show.add_parser('tenant', help = 'Tenant')
-        p.set_defaults(obj_class = ConfigTenant, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('tenant', 'Tenant',
+                ConfigTenant, ps_list, ps_show)
 
         p = ps_create.add_parser('tenant', help = 'Tenant')
         p.set_defaults(obj_class = ConfigTenant, obj_func = 'create')
@@ -2976,24 +2984,16 @@ class ConfigCli():
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
         #### Virtual Machine ####
-        p = ps_list.add_parser('vm', help = 'Virtual Machine')
-        p.set_defaults(obj_class = ConfigVm, obj_func = 'list')
-
-        p = ps_show.add_parser('vm', help = 'Virtual Machine')
-        p.set_defaults(obj_class = ConfigVm, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('vm', 'Virtual Machine',
+                ConfigVm, ps_list, ps_show)
 
         p = ps_delete.add_parser('vm', help = 'Virtual Machine')
         p.set_defaults(obj_class = ConfigVm, obj_func = 'delete')
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
         #### Virtual Network ####
-        p = ps_list.add_parser('network', help = 'Virtual Network')
-        p.set_defaults(obj_class = ConfigNetwork, obj_func = 'list')
-
-        p = ps_show.add_parser('network', help = 'Virtual Network')
-        p.set_defaults(obj_class = ConfigNetwork, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('network', 'Virtual Network',
+                ConfigNetwork, ps_list, ps_show)
 
         p = ps_create.add_parser('network', help = 'Virtual Network')
         p.set_defaults(obj_class = ConfigNetwork, obj_func = 'create')
@@ -3019,12 +3019,8 @@ class ConfigCli():
                 help = 'Policy')
 
         #### Virtual Router ####
-        p = ps_list.add_parser('vrouter', help = 'Virtual Router')
-        p.set_defaults(obj_class = ConfigVirtualRouter, obj_func = 'list')
-
-        p = ps_show.add_parser('vrouter', help = 'Virtual Router')
-        p.set_defaults(obj_class = ConfigVirtualRouter, obj_func = 'show')
-        self.add_show_args(p)
+        self.add_common_parser('vrouter', 'Virtual Router',
+                ConfigVirtualRouter, ps_list, ps_show)
 
         p = ps_create.add_parser('vrouter', help = 'Virtual Router')
         p.set_defaults(obj_class = ConfigVirtualRouter, obj_func = 'create')
