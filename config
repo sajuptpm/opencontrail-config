@@ -36,7 +36,7 @@ default_args_k2 = [
     ('--auth-server', '127.0.0.1'),
     ('--auth-url', '/v2.0/tokens'),
     ('--api-server', '127.0.0.1'),
-    ('--tenant', 'demo')]
+    ('--tenant', 'admin')]
 
 default_args = default_args_k2
 
@@ -128,9 +128,28 @@ class ConfigObject(object):
             self.show_json(obj)      
 
 
+class ConfigAcl(ConfigObject):
+    def __init__(self, client):
+        parent = client.tenant
+        super(ConfigAcl, self).__init__(client, parent,
+                client.vnc.access_control_list_read,
+                client.vnc.access_control_lists_list)
+
+    def show_obj(self, obj):
+        print '## Access Control List'
+        print 'Name: %s' %(obj.get_fq_name())
+        print 'UUID: %s' %(obj.uuid)
+
+    def create(self, args):
+        pass
+
+    def delete(self, args):
+        pass
+
+
 class ConfigCni(ConfigObject):
     def __init__(self, client):
-        super(ConfigCni, self).__init__(client) 
+        super(ConfigCni, self).__init__(client, client.tenant) 
 
     def show(self, args):
         vm_name = '%s-%s' % (socket.gethostname(), args.name)
@@ -151,7 +170,9 @@ class ConfigCni(ConfigObject):
                 continue
             for iip_bref in iip_bref_list:
                 iip = self.vnc.instance_ip_read(id = iip_bref['uuid'])
-                print '    inet: %s' %(iip.get_instance_ip_address())
+                vn_fq_name = iip.get_virtual_network_refs()[0]['to']
+                print '    inet: %s  network: %s' %(iip.instance_ip_address,
+                        self.fq_name_to_str(vn_fq_name))
 
     def vrouter_port_add(self, mac, vmi_id, vm_id, vn_id, cni_name):
         url = 'http://127.0.0.1:9091/port'
@@ -481,6 +502,69 @@ class ConfigVm(ConfigObject):
             return
 
 
+class ConfigPhysicalInterface(ConfigObject):
+    def __init__(self, client):
+        super(ConfigPhysicalRouter, self).__init__(client, None,
+                client.vnc.physical_router_read,
+                client.vnc.physical_routers_list)
+
+    def delete(self, args):
+        obj = self.obj_get(args.name, msg = True)
+        try:
+            self.vnc.physical_interface_delete(id = obj.uuid)
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
+
+
+class ConfigPhysicalRouter(ConfigObject):
+    def __init__(self, client):
+        parent = client.vnc.global_system_config_read(
+                fq_name = ['default-global-system-config'])
+        super(ConfigPhysicalRouter, self).__init__(client, parent,
+                client.vnc.physical_router_read,
+                client.vnc.physical_routers_list)
+
+    def create(self, args):
+        obj = self.obj_get(args.name)
+        if obj:
+            print 'ERROR: Physical Router %s exists!' %(args.name)
+            return
+        obj = vnc_api.PhysicalRouter(name = args.name, parent_obj = self.parent)
+        obj.physical_router_vendor_name = 'juniper'
+        if args.vendor:
+            obj.physical_router_vendor_name = args.vendor
+        obj.physical_router_product_name = args.model
+        obj.physical_router_management_ip = args.mgmt_address
+        if args.loopback_address:
+            obj.physical_router_loopback_ip = args.loopback_address
+            obj.physical_router_dataplane_ip = args.loopback_address
+        if args.data_address:
+            obj.physical_router_dataplane_ip = args.data_address
+        obj.physical_router_vnc_managed = args.device_manager
+        if args.username and args.password:
+            obj.physical_router_user_credentials = vnc_api.UserCredentials(
+                    username = args.username, password = args.password)
+        if args.bgp_router:
+            br = ConfigBgpRouter(self.client)
+            obj = br.obj_get(args.bgp_router)
+            if obj:
+                obj.add_bgp_router(obj)
+        if args.virtual_router:
+            vr = ConfigVirtualRouter(self.client)
+            for name in args.virtual_router:
+                obj = vr.obj_get(name)
+                if obj:
+                    obj.add_virtual_router(obj)
+        self.vnc.physical_router_create(obj)
+
+    def delete(self, args):
+        obj = self.obj_get(args.name, msg = True)
+        try:
+            self.vnc.physical_router_delete(id = obj.uuid)
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
+
+
 class ConfigVirtualRouter(ConfigObject):
     def __init__(self, client):
         parent = client.vnc.global_system_config_read(
@@ -514,25 +598,6 @@ class ConfigVirtualRouter(ConfigObject):
             self.vnc.virtual_router_delete(id = obj.uuid)
         except Exception as e:
             print 'ERROR: %s' %(str(e))
-
-
-class ConfigAcl(ConfigObject):
-    def __init__(self, client):
-        parent = client.tenant
-        super(ConfigAcl, self).__init__(client, parent,
-                client.vnc.access_control_list_read,
-                client.vnc.access_control_lists_list)
-
-    def show_obj(self, obj):
-        print '## Access Control List'
-        print 'Name: %s' %(obj.get_fq_name())
-        print 'UUID: %s' %(obj.uuid)
-
-    def create(self, args):
-        pass
-
-    def delete(self, args):
-        pass
 
 
 class ConfigLoadbalancer(ConfigObject):
@@ -2356,9 +2421,12 @@ class ConfigBgpRouter(ConfigObject):
             params.address_families = vnc_api.AddressFamilies(
                     af_list + ['erm-vpn'])
             params.vendor = 'contrail'
+            params.router_type = 'control-node'
         else:
-            params.address_families = vnc_api.AddressFamilies(af_list)
+            params.address_families = vnc_api.AddressFamilies(
+                    af_list + ['inet'])
             params.vendor = args.vendor
+            params.router_type = 'router'
         params.autonomous_system = 64512
         if args.asn:
             params.autonomous_system = int(asn)
@@ -2812,6 +2880,20 @@ class ConfigCli():
                 obj_func = 'delete')
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
+        #### Logical Interface ####
+        self.add_common_parser('logical-interface', 'Logical Interface',
+                ConfigLogicalInterface, ps_list, ps_show)
+
+        p = ps_create.add_parser('logical-interface',
+                help = 'Logical Interface')
+        p.set_defaults(obj_class = ConfigLogicalInterface, obj_func = 'create')
+        p.add_argument('name', metavar = '<name>', help = 'The name')
+
+        p = ps_delete.add_parser('logical-interface',
+                help = 'Logical Interface')
+        p.set_defaults(obj_class = ConfigLogicalInterface, obj_func = 'delete')
+        p.add_argument('name', metavar = '<name>', help = 'The name')
+
         #### Policy ####
         self.add_common_parser('policy', 'Network Policy',
                 ConfigPolicy, ps_list, ps_show)
@@ -2894,6 +2976,52 @@ class ConfigCli():
                 help='Disable policy')
         p.add_argument('--security-group', action = 'store_true',
                 help = 'Security group')
+
+        #### Physical Interface ####
+        self.add_common_parser('physical-interface', 'Physical Interface',
+                ConfigPhysicalInterface, ps_list, ps_show)
+
+        p = ps_create.add_parser('physical-interface',
+                help = 'Physical Interface')
+        p.set_defaults(obj_class = ConfigPhysicalInterface, obj_func = 'create')
+        p.add_argument('name', metavar = '<name>', help = 'The name')
+
+        p = ps_delete.add_parser('physical-interface',
+                help = 'Physical Interface')
+        p.set_defaults(obj_class = ConfigPhysicalInterface, obj_func = 'delete')
+        p.add_argument('name', metavar = '<name>', help = 'The name')
+
+        #### Physical Router ####
+        self.add_common_parser('physical-router', 'Physical Router',
+                ConfigPhysicalRouter, ps_list, ps_show)
+
+        p = ps_create.add_parser('physical-router', help = 'Physical Router')
+        p.set_defaults(obj_class = ConfigPhysicalRouter, obj_func = 'create')
+        p.add_argument('name', metavar = '<name>', help = 'The name')
+        p.add_argument('--vendor', metavar = '<name>',
+                help = 'The vendor name')
+        p.add_argument('--model', metavar = '<name>', required = True,
+                help = 'The model name')
+        p.add_argument('--mgmt-address', metavar = '<address>', required = True,
+                help = 'The management address')
+        p.add_argument('--data-address', metavar = '<address>',
+                help = 'The data address')
+        p.add_argument('--loopback-address', metavar = '<address>',
+                help = 'The loopback/VTEP address')
+        p.add_argument('--bgp-router', metavar = 'name',
+                help = 'The BGP router')
+        p.add_argument('--virtual-router', metavar = 'name', action = 'append',
+                help = 'The virtual router (TSN)')
+        p.add_argument('--device-manager', action = 'store_true',
+                help='Managed by Device Manager')
+        p.add_argument('--username', metavar = 'name',
+                help = 'The management username')
+        p.add_argument('--password', metavar = 'name',
+                help = 'The management password')
+
+        p = ps_delete.add_parser('physical-router', help = 'Physical Router')
+        p.set_defaults(obj_class = ConfigPhysicalRouter, obj_func = 'delete')
+        p.add_argument('name', metavar = '<name>', help = 'The name')
 
         #### Service Appliance ####
         self.add_common_parser('sa', 'Service Appliance',
@@ -3019,20 +3147,21 @@ class ConfigCli():
                 help = 'Policy')
 
         #### Virtual Router ####
-        self.add_common_parser('vrouter', 'Virtual Router',
+        self.add_common_parser('virtual-router', 'Virtual Router',
                 ConfigVirtualRouter, ps_list, ps_show)
 
-        p = ps_create.add_parser('vrouter', help = 'Virtual Router')
+        p = ps_create.add_parser('virtual-router', help = 'Virtual Router')
         p.set_defaults(obj_class = ConfigVirtualRouter, obj_func = 'create')
         p.add_argument('name', metavar = '<name>', help = 'The name')
         p.add_argument('--address', metavar = '<IP address>', required = True,
                 help = 'IP address')
 
-        p = ps_delete.add_parser('vrouter', help = 'Virtual Router')
+        p = ps_delete.add_parser('virtual-router', help = 'Virtual Router')
         p.set_defaults(obj_class = ConfigVirtualRouter, obj_func = 'delete')
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
-        p = ps_delete.add_parser('vrouter-vm', help = 'Virtual Router VM ref')
+        p = ps_delete.add_parser('virtual-router-vm',
+                help = 'Virtual Router VM ref')
         p.set_defaults(obj_class = ConfigVirtualRouter, obj_func = 'delete_vm')
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
