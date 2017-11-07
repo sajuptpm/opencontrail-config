@@ -36,7 +36,7 @@ default_args_k2 = [
     ('--auth-server', '127.0.0.1'),
     ('--auth-url', '/v2.0/tokens'),
     ('--api-server', '127.0.0.1'),
-    ('--tenant', 'admin')]
+    ('--tenant', 'demo')]
 
 default_args = default_args_k2
 
@@ -502,11 +502,31 @@ class ConfigVm(ConfigObject):
             return
 
 
+class ConfigLogicalInterface(ConfigObject):
+    def __init__(self, client):
+        super(ConfigLogicalInterface, self).__init__(client, None,
+                client.vnc.logical_interface_read,
+                client.vnc.logical_interfaces_list)
+
+    def create(self, args):
+        pass
+
+    def delete(self, args):
+        obj = self.obj_get(args.name, msg = True)
+        try:
+            self.vnc.physical_interface_delete(id = obj.uuid)
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
+
+
 class ConfigPhysicalInterface(ConfigObject):
     def __init__(self, client):
-        super(ConfigPhysicalRouter, self).__init__(client, None,
-                client.vnc.physical_router_read,
-                client.vnc.physical_routers_list)
+        super(ConfigPhysicalInterface, self).__init__(client, None,
+                client.vnc.physical_interface_read,
+                client.vnc.physical_interfaces_list)
+
+    def create(self, args):
+        pass
 
     def delete(self, args):
         obj = self.obj_get(args.name, msg = True)
