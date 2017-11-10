@@ -746,11 +746,13 @@ class ConfigTenant(ConfigObject):
         obj = self.obj_get(args.name, msg = True)
         if not obj:
             return
-        self.del_obj(obj, 'project')
-        #try:
-        #    self.vnc.project_delete(id = obj.uuid)
-        #except Exception as e:
-        #    print 'ERROR: %s' %(str(e))
+        if args.force:
+            self.del_obj(obj, 'project')
+        else:
+            try:
+                self.vnc.project_delete(id = obj.uuid)
+            except Exception as e:
+                print 'ERROR: %s' %(str(e))
 
     def del_obj(self, obj, obj_type):
         type_int = ['routing_instance']
@@ -783,8 +785,8 @@ class ConfigTenant(ConfigObject):
                 obj_next = f_read(id = ref['uuid'])
                 self.del_obj(obj_next, type)
         print 'Delete obj %s' %obj.fq_name
-        #f_del = getattr(self.vnc, obj_type + '_delete')
-        #f_del(id = obj.uuid)
+        f_del = getattr(self.vnc, obj_type + '_delete')
+        f_del(id = obj.uuid)
 
 
 class ConfigPolicy(ConfigObject):
@@ -3130,6 +3132,8 @@ class ConfigCli():
         p = ps_delete.add_parser('tenant', help = 'Tenant')
         p.set_defaults(obj_class = ConfigTenant, obj_func = 'delete')
         p.add_argument('name', metavar = '<name>', help = 'The name')
+        p.add_argument('--force', action = 'store_true',
+                help='Delete everything in the tenant.')
 
         #### Virtual Machine ####
         self.add_common_parser('vm', 'Virtual Machine',
