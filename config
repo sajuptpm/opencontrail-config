@@ -40,13 +40,42 @@ default_args_k2 = [
 
 default_args = default_args_k2
 
+def shell_cmd(cmd):
+    output = subprocess.check_output(cmd, shell = True)
+    return output
+
 class ConfigArgs(object):
     def __init__(self):
         pass
 
-def shell_cmd(cmd):
-    output = subprocess.check_output(cmd, shell = True)
-    return output
+class Vrouter(object):
+    def __init__(self):
+        pass
+
+    def plug_port(self, mac, vmi_id, vm_id, vn_id, cni_name):
+        url = 'http://127.0.0.1:9091/port'
+        headers = {'content-type': 'application/json'}
+        data = {}
+        data['type'] = 0
+        data['mac-address'] = mac
+        data['id'] = vmi_id
+        data['instance-id'] = vm_id
+        data['vn-id'] = vn_id
+        data['vm-project-id'] = ''
+        data['display-name'] = ''
+        data['ip-address'] = '0.0.0.0'
+        data['ip6-address'] = ''
+        data['rx-vlan-id'] = -1
+        data['tx-vlan-id'] = -1
+        data['system-name'] = cni_name
+        r = requests.post(url, headers = headers,
+                data = json.dumps(data, indent = 4))
+        #print r.text
+
+    def unplug_port(self, vmi_id):
+        url = 'http://127.0.0.1:9091/port/%s' %vmi_id
+        r = requests.delete(url)
+
 
 class ConfigObject(object):
     def __init__(self, client, parent = None,
@@ -174,38 +203,14 @@ class ConfigCni(ConfigObject):
                 print '    inet: %s  network: %s' %(iip.instance_ip_address,
                         self.fq_name_to_str(vn_fq_name))
 
-    def vrouter_port_add(self, mac, vmi_id, vm_id, vn_id, cni_name):
-        url = 'http://127.0.0.1:9091/port'
-        headers = {'content-type': 'application/json'}
-        data = {}
-        data['type'] = 0
-        data['mac-address'] = mac
-        data['id'] = vmi_id
-        data['instance-id'] = vm_id
-        data['vn-id'] = vn_id
-        data['vm-project-id'] = ''
-        data['display-name'] = ''
-        data['ip-address'] = '0.0.0.0'
-        data['ip6-address'] = ''
-        data['rx-vlan-id'] = -1
-        data['tx-vlan-id'] = -1
-        data['system-name'] = cni_name
-        r = requests.post(url, headers = headers,
-                data = json.dumps(data, indent = 4))
-        #print r.text
-
-    def vrouter_port_del(self, vmi_id):
-        url = 'http://127.0.0.1:9091/port/%s' %vmi_id
-        r = requests.delete(url)
-
     def add_cni(self, tenant, id, vm, network, veth):
         # VMI
-        agent_vmi = ConfigPort(self.client)
-        vmi_args = ConfigArgs()
-        vmi_args.name = 'id'
-        vmi_args.network = network
-        vmi_args.vm = vm.uuid
-        vmi = agent_vmi.create(vmi_args)
+        config_port = ConfigPort(self.client)
+        port_args = ConfigArgs()
+        port_args.name = 'id'
+        port_args.network = network
+        port_args.vm = vm.uuid
+        vmi = config_port.create(port_args)
 
         # CNI
         mac = vmi.virtual_machine_interface_mac_addresses.mac_address[0]
@@ -226,7 +231,8 @@ class ConfigCni(ConfigObject):
                 self.parent.fq_name + [network])
         #api.add_port(vm.uuid, vmi.uuid, cni_name, mac,
         #        port_type = 'NovaVMPort', vn_id = vn_id)
-        self.vrouter_port_add(mac, vmi.uuid, vm.uuid, vn_id, cni_name)
+        vr = Vrouter()
+        vr.plug_port(mac, vmi.uuid, vm.uuid, vn_id, cni_name)
 
         # dhclient
         lease_file = '/var/run/dhclient-%s-%s.leases' %(id, veth)
@@ -292,10 +298,11 @@ class ConfigCni(ConfigObject):
         # VMI
         #from contrail_vrouter_api.vrouter_api import ContrailVRouterApi
         vmi_list = vm.get_virtual_machine_interface_back_refs()
+        vr = Vrouter()
         for ref in vmi_list:
             #api = ContrailVRouterApi()
             #api.delete_port(ref['uuid'])
-            self.vrouter_port_del(ref['uuid'])
+            vr.unplug_port(ref['uuid'])
 
             vmi = self.vnc.virtual_machine_interface_read(id = ref['uuid'])
 
@@ -493,8 +500,91 @@ class ConfigVm(ConfigObject):
         print 'Name: %s' %(obj.get_fq_name())
         print 'UUID: %s' %(obj.uuid)
 
+    def add_port(self, vm, network):
+        # Virtual machine interface
+        config_port = ConfigPort(self.client)
+        port_args = ConfigArgs()
+        port_args.name = 'id'
+        port_args.network = network
+        port_args.vm = vm.uuid
+        vmi = config_port.create(port_args)
+
+        # TAP interface
+        mac = vmi.virtual_machine_interface_mac_addresses.mac_address[0]
+        l = mac.split(':')
+        tap_name = 'tap' + l[1] + l[2] + l[3] + l[4] + '-' + l[5]
+        subprocess.check_output('sudo ip tuntap add %s mode tap' %(tap_name),
+                shell = True)
+        subprocess.check_output('sudo ip link set %s up' %(tap_name),
+                shell = True)
+
+        # Plug VMI
+        vn_id = self.vnc.fq_name_to_id('virtual-network',
+                self.client.tenant.fq_name + [network])
+        vr = Vrouter()
+        vr.plug_port(mac, vmi.uuid, vm.uuid, vn_id, tap_name)
+
+        print 'Network: %s, TAP: %s, MAC: %s' %(network, tap_name, mac)
+
+    def create(self, args):
+        try:
+            vm = self.vnc.virtual_machine_read(fq_name = [args.name])
+            print 'VM %s already exists.' %(args.name)
+            return None
+        except vnc_api.NoIdError:
+            pass
+        if (args.name == 'id'):
+            id = str(uuid.uuid4())
+            vm = vnc_api.VirtualMachine(name = id)
+            vm.uuid = id
+        else:
+            vm = vnc_api.VirtualMachine(name = args.name)
+
+        self.vnc.virtual_machine_create(vm)
+        vm = self.vnc.virtual_machine_read(id = vm.uuid)
+
+        if not args.network:
+            return
+
+        for network in args.network:
+            self.add_port(vm, network)
+
+    def delete_port(self, port_id):
+        vmi = self.vnc.virtual_machine_interface_read(id = port_id)
+
+        # Unplug VMI
+        vr = Vrouter()
+        vr.unplug_port(vmi.uuid)
+
+        # Delete TAP interface
+        mac = vmi.virtual_machine_interface_mac_addresses.mac_address[0]
+        l = mac.split(':')
+        tap_name = 'tap' + l[1] + l[2] + l[3] + l[4] + '-' + l[5]
+        try:
+            subprocess.check_output('sudo ip link set %s down' %(tap_name),
+                    shell = True)
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
+        try:
+            subprocess.check_output('sudo ip link delete %s' %(tap_name),
+                    shell = True)
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
+
+        # Delete IP address
+        ip_list = vmi.get_instance_ip_back_refs()
+        if ip_list:
+            for ip in ip_list:
+                self.vnc.instance_ip_delete(id = ip['uuid'])
+
+        self.vnc.virtual_machine_interface_delete(id = port_id)
+
     def delete(self, args):
         obj = self.obj_get(args.name, msg = True)
+        port_list = obj.get_virtual_machine_interface_back_refs()
+        if port_list:
+            for port in port_list:
+                self.delete_port(port['uuid'])
         try:
             self.vnc.virtual_machine_delete(id = obj.uuid)
         except Exception as e:
@@ -1987,9 +2077,7 @@ class ConfigPort(ConfigObject):
         if hasattr(args, 'vm') and args.vm:
             vm_obj = self.vnc.virtual_machine_read(id = args.vm)
             vmi.add_virtual_machine(vm_obj)
-        #sg = self.vnc.security_group_read(
-        #            fq_name = ['default-domain', args.tenant, 'default'])
-        #vmi.add_security_group(sg)
+        self.add_sg(vmi, 'default')
         self.vnc.virtual_machine_interface_create(vmi)
         vmi = self.vnc.virtual_machine_interface_read(id = vmi.uuid)
 
@@ -2672,6 +2760,14 @@ class ConfigVirtualMachine():
         self.nova.servers.delete(obj.id)
 
 
+class ConfigTest():
+    def __init__(self, client):
+        self.client = client
+
+    def create(self, args):
+        pass
+
+
 class ConfigClient():
     def __init__(self, auth_username, auth_password, auth_domain, auth_tenant,
             api_server, region, auth_server, auth_url, tenant):
@@ -2992,7 +3088,7 @@ class ConfigCli():
 
         p = ps_delete.add_parser('port', help = 'Port/VMI')
         p.set_defaults(obj_class = ConfigPort, obj_func = 'delete')
-        p.add_argument('name', metavar = '<name> | <id>', help = 'The name')
+        p.add_argument('name', metavar = '<name> | id', help = 'The name')
         p.add_argument('--mirror', action = 'store_true', help = 'Mirror')
         p.add_argument('--disable-policy', action = 'store_true',
                 help='Disable policy')
@@ -3044,6 +3140,10 @@ class ConfigCli():
         p = ps_delete.add_parser('physical-router', help = 'Physical Router')
         p.set_defaults(obj_class = ConfigPhysicalRouter, obj_func = 'delete')
         p.add_argument('name', metavar = '<name>', help = 'The name')
+
+        #### Security Group ####
+        self.add_common_parser('sg', 'Security Group',
+                ConfigSecurityGroup, ps_list, ps_show)
 
         #### Service Appliance ####
         self.add_common_parser('sa', 'Service Appliance',
@@ -3139,6 +3239,12 @@ class ConfigCli():
         self.add_common_parser('vm', 'Virtual Machine',
                 ConfigVm, ps_list, ps_show)
 
+        p = ps_create.add_parser('vm', help = 'Virtual Machine')
+        p.set_defaults(obj_class = ConfigVm, obj_func = 'create')
+        p.add_argument('name', metavar = '<name> | id', help = 'The name')
+        p.add_argument('--network', metavar = 'network', action = 'append',
+                help = 'The virtual network')
+
         p = ps_delete.add_parser('vm', help = 'Virtual Machine')
         p.set_defaults(obj_class = ConfigVm, obj_func = 'delete')
         p.add_argument('name', metavar = '<name>', help = 'The name')
@@ -3187,6 +3293,11 @@ class ConfigCli():
         p = ps_delete.add_parser('virtual-router-vm',
                 help = 'Virtual Router VM ref')
         p.set_defaults(obj_class = ConfigVirtualRouter, obj_func = 'delete_vm')
+        p.add_argument('name', metavar = '<name>', help = 'The name')
+
+        #### Test ####
+        p = ps_create.add_parser('test', help = 'Test')
+        p.set_defaults(obj_class = ConfigTest, obj_func = 'create')
         p.add_argument('name', metavar = '<name>', help = 'The name')
 
     def run(self):
