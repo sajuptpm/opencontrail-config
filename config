@@ -156,6 +156,40 @@ class ConfigObject(object):
         else:
             self.show_json(obj)      
 
+    def del_obj_with_dep(self, obj, obj_type):
+        type_int = ['routing_instance']
+        print '%s: %s' %(obj_type, obj.fq_name)
+        for types in obj.children_fields:
+            type = types.rstrip('s')
+            #print '  Child type: %s' %type
+            if type in type_int:
+                continue
+            f_get = getattr(obj, 'get_' + types)
+            l = f_get()
+            if not l:
+                continue
+            f_read = getattr(self.vnc, type + '_read')
+            for ref in l:
+                obj_next = f_read(id = ref['uuid'])
+                self.del_obj_with_dep(obj_next, type)
+
+        for types in obj.backref_fields:
+            type = types.replace('_back_refs', '')
+            #print '  BackRef type: %s' %type
+            if type in type_int:
+                continue
+            f_get = getattr(obj, 'get_' + types)
+            l = f_get()
+            if not l:
+                continue
+            f_read = getattr(self.vnc, type + '_read')
+            for ref in l:
+                obj_next = f_read(id = ref['uuid'])
+                self.del_obj_with_dep(obj_next, type)
+        print 'Delete obj %s' %obj.fq_name
+        f_del = getattr(self.vnc, obj_type + '_delete')
+        f_del(id = obj.uuid)
+
 
 class ConfigAcl(ConfigObject):
     def __init__(self, client):
@@ -438,6 +472,18 @@ class ConfigIpam(ConfigObject):
                 print 'ERROR: %s' %(str(e))
 
 
+class ConfigFloatingIp(ConfigObject):
+    def __init__(self, client):
+        super(ConfigFloatingIp, self).__init__(client, None,
+                client.vnc.floating_ip_read,
+                client.vnc.floating_ips_list)
+
+    def show_obj(self, obj):
+        print '## Floating IP'
+        print 'Name: %s' %(obj.get_fq_name())
+        print 'UUID: %s' %(obj.uuid)
+
+
 class ConfigInstanceIp(ConfigObject):
     def __init__(self, client):
         super(ConfigInstanceIp, self).__init__(client, None,
@@ -490,6 +536,37 @@ class ConfigInstanceIp(ConfigObject):
 
 
 class ConfigVm(ConfigObject):
+    def __init__(self, client):
+        super(ConfigVm, self).__init__(client, None,
+                client.vnc.virtual_machine_read,
+                client.vnc.virtual_machines_list)
+
+    def show_obj(self, obj):
+        print '## Virtual Machine'
+        print 'Name: %s' %(obj.get_fq_name())
+        print 'UUID: %s' %(obj.uuid)
+
+    def create(self, args):
+        pass
+
+    def delete(self, args):
+        obj = self.obj_get(args.name, msg = True)
+        bref_list = obj.get_virtual_router_back_refs()
+        if bref_list:
+            for bref in bref_list:
+                r = self.vnc.virtual_router_read(id = bref['uuid'])
+                r.del_virtual_machine(obj)
+                self.vnc.virtual_router_update(r)
+        self.del_obj_with_dep(obj, 'virtual_machine')
+
+        #try:
+        #    self.vnc.virtual_machine_delete(id = obj.uuid)
+        #except Exception as e:
+        #    print 'ERROR: %s' %(str(e))
+        #    return
+
+
+class ConfigLibvirtVm(ConfigObject):
     def __init__(self, client):
         super(ConfigVm, self).__init__(client, None,
                 client.vnc.virtual_machine_read,
@@ -726,7 +803,11 @@ class ConfigLoadbalancer(ConfigObject):
         pass
 
     def delete(self, args):
-        pass
+        obj = self.obj_get(args.name, msg = True)
+        try:
+            self.vnc.loadbalancer_delete(id = obj.uuid)
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
 
 
 class ConfigLoadbalancerListener(ConfigObject):
@@ -741,6 +822,13 @@ class ConfigLoadbalancerListener(ConfigObject):
         print 'Name: %s' %(obj.get_fq_name())
         print 'UUID: %s' %(obj.uuid)
 
+    def delete(self, args):
+        obj = self.obj_get(args.name, msg = True)
+        try:
+            self.vnc.loadbalancer_listener_delete(id = obj.uuid)
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
+
 
 class ConfigLoadbalancerPool(ConfigObject):
     def __init__(self, client):
@@ -754,6 +842,13 @@ class ConfigLoadbalancerPool(ConfigObject):
         print 'Name: %s' %(obj.get_fq_name())
         print 'UUID: %s' %(obj.uuid)
 
+    def delete(self, args):
+        obj = self.obj_get(args.name, msg = True)
+        try:
+            self.vnc.loadbalancer_pool_delete(id = obj.uuid)
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
+
 
 class ConfigLoadbalancerMember(ConfigObject):
     def __init__(self, client):
@@ -765,6 +860,13 @@ class ConfigLoadbalancerMember(ConfigObject):
         print '## Loadbalancer Member'
         print 'Name: %s' %(obj.get_fq_name())
         print 'UUID: %s' %(obj.uuid)
+
+    def delete(self, args):
+        obj = self.obj_get(args.name, msg = True)
+        try:
+            self.vnc.loadbalancer_member_delete(id = obj.uuid)
+        except Exception as e:
+            print 'ERROR: %s' %(str(e))
 
 
 class ConfigServiceApplianceSet(ConfigObject):
@@ -837,46 +939,12 @@ class ConfigTenant(ConfigObject):
         if not obj:
             return
         if args.force:
-            self.del_obj(obj, 'project')
+            self.del_obj_with_dep(obj, 'project')
         else:
             try:
                 self.vnc.project_delete(id = obj.uuid)
             except Exception as e:
                 print 'ERROR: %s' %(str(e))
-
-    def del_obj(self, obj, obj_type):
-        type_int = ['routing_instance']
-        print '%s: %s' %(obj_type, obj.fq_name)
-        for types in obj.children_fields:
-            type = types.rstrip('s')
-            #print '  Child type: %s' %type
-            if type in type_int:
-                continue
-            f_get = getattr(obj, 'get_' + types)
-            l = f_get()
-            if not l:
-                continue
-            f_read = getattr(self.vnc, type + '_read')
-            for ref in l:
-                obj_next = f_read(id = ref['uuid'])
-                self.del_obj(obj_next, type)
-
-        for types in obj.backref_fields:
-            type = types.replace('_back_refs', '')
-            #print '  BackRef type: %s' %type
-            if type in type_int:
-                continue
-            f_get = getattr(obj, 'get_' + types)
-            l = f_get()
-            if not l:
-                continue
-            f_read = getattr(self.vnc, type + '_read')
-            for ref in l:
-                obj_next = f_read(id = ref['uuid'])
-                self.del_obj(obj_next, type)
-        print 'Delete obj %s' %obj.fq_name
-        f_del = getattr(self.vnc, obj_type + '_delete')
-        f_del(id = obj.uuid)
 
 
 class ConfigPolicy(ConfigObject):
@@ -2884,6 +2952,11 @@ class ConfigCli():
         p.set_defaults(obj_class = ConfigCni, obj_func = 'delete')
         p.add_argument('--id', required = True, metavar = '<ID>',
                 help='Container ID')
+
+        #### Floating IP ####
+        self.add_common_parser('fip', 'Floating IP',
+                ConfigFloatingIp, ps_list, ps_show)
+
 
         #### Instance IP ####
         self.add_common_parser('iip', 'Instance IP',
